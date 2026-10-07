@@ -1805,3 +1805,52 @@ body[data-view="charts"] #pivotTable .total-row td:first-child {
     background: transparent !important;
   }
 }
+
+/* Mensal 24h: barra de mês + extração */
+.month-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 14px;
+}
+.month-toolbar .field {
+  margin-bottom: 0;
+  min-width: 170px;
+}
+#monthlyBody tr.no-base td {
+  color: var(--muted);
+  background: #f6f8fa;
+}
+#monthlyBody tr.total-row td {
+  font-weight: 800;
+  background: #eaf2ff;
+}
+#monthlyBody td:nth-child(n+2):nth-child(-n+8) {
+  text-align: right;
+}
+.card-sub {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.75;
+}
+#monthlyView .notice {
+  height: auto;
+  min-height: 0;
+  line-height: 1.45;
+}
+#monthlyView table {
+  min-width: 0;
+  width: 100%;
+}
+#monthlyView th,
+#monthlyView td {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+#monthlyBody td:last-child {
+  min-width: 220px;
+  white-space: normal;
+}

@@ -27,6 +27,9 @@ const state = {
   latestFileName: "",
   baselineFileName: "",
   manualStatus: {},
+  baselineDay: "",
+  latestSnap: null,
+  selectedMonth: "",
   duplicateCount: 0,
   history: [],
   microMap: INTERNAL_MICRO_MAP,
@@ -59,7 +62,6 @@ const els = {
   stateFile: document.querySelector("#stateFile"),
   exportState: document.querySelector("#exportState"),
   exportCsv: document.querySelector("#exportCsv"),
-  sheetsConfig: document.querySelector("#sheetsConfig"),
   clearData: document.querySelector("#clearData"),
   search: document.querySelector("#searchBox"),
   status: document.querySelector("#statusFilter"),
@@ -137,28 +139,7 @@ async function dbClear() {
 }
 
 function sheetsConfig() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(SHEETS_CONFIG_KEY) || "{}");
-    return {
-      url: String(DEFAULT_SHEETS_URL || saved.url || "").trim(),
-      token: "",
-    };
-  } catch {
-    return { url: DEFAULT_SHEETS_URL, token: "" };
-  }
-}
-
-function configureSheetsSync() {
-  const current = sheetsConfig();
-  const url = prompt("Cole a URL /exec do app da Web do Google Apps Script:", current.url);
-  if (url === null) return;
-  if (url.trim() && !/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url.trim())) {
-    setNotice("Link inválido. Use o link do App da Web que começa com https://script.google.com/macros/s/ e termina em /exec.", "error");
-    return;
-  }
-  localStorage.setItem(SHEETS_CONFIG_KEY, JSON.stringify({ url: url.trim() }));
-  setNotice("Banco Google configurado. Recarregando dados...", "ok");
-  loadSheetsHistory().then((ok) => { if (ok) render(); });
+  return { url: DEFAULT_SHEETS_URL, token: "" };
 }
 
 function applyDatabasePayload(payload) {
@@ -170,12 +151,18 @@ function applyDatabasePayload(payload) {
     .sort((a, b) => String(b.at).localeCompare(String(a.at)));
   if (stamps.length && stamps[0].at) state.lastUpdate = stamps[0];
   if (currentBase && currentBase.records && currentBase.records.length) {
+    // base fixa do dia: exatamente como foi gravada na 1a subida (nao recalcula)
     state.baseline = currentBase.records;
-    state.baselineFileName = currentBase.fileName || `Sheets - ${currentBase.dateKey}`;
+    state.baselineFileName = currentBase.fileName || `Base de ${currentBase.dateKey}`;
+    state.baselineDay = currentBase.dateKey || "";
   }
-  if (latest && latest.keys && latest.keys.length) {
+  state.latestSnap = latest && latest.keys ? { dateKey: latest.dateKey, type: latest.type, uploadedAt: latest.uploadedAt, fileName: latest.fileName, keys: latest.keys } : null;
+  if (latest && latest.keys && latest.keys.length && (!state.baselineDay || latest.dateKey >= state.baselineDay)) {
     state.latestKeys = new Set(latest.keys || []);
-    state.latestFileName = latest.fileName || `Sheets - ${latest.dateKey}`;
+    state.latestFileName = latest.fileName || `Atualização de ${latest.dateKey}`;
+  } else {
+    state.latestKeys = null;
+    state.latestFileName = "";
   }
   return !!remote.length || !!latest;
 }
@@ -197,10 +184,10 @@ async function callSheets(body) {
     try {
       return JSON.parse(text);
     } catch {
-      return { ok: false, error: "O Apps Script não respondeu em JSON. Confira se a implantação nova está ativa e com acesso para \"Qualquer pessoa\"." };
+      return { ok: false, error: "o servidor de dados respondeu em formato inesperado" };
     }
   } catch (error) {
-    return { ok: false, error: error && error.name === "AbortError" ? "O banco Google demorou demais para responder." : "Não consegui falar com o banco Google (rede bloqueada ou link errado)." };
+    return { ok: false, error: error && error.name === "AbortError" ? "o servidor de dados demorou demais para responder" : "sem conexão com o servidor de dados" };
   } finally {
     clearTimeout(timer);
   }
@@ -212,10 +199,10 @@ function syncSnapshotToSheets(snapshot) {
     const result = await callSheets({ action: "save", snapshot });
     if (result.skipped) return;
     if (!result.ok) {
-      setNotice("Não salvou no banco Google: " + (result.error || "erro desconhecido") + ". Os outros NÃO vão ver esta base.", "error");
+      setNotice("A base NÃO foi salva: " + (result.error || "erro desconhecido") + ". Quem abrir o link não vai ver esta base. Tente subir de novo.", "error");
       return;
     }
-    setNotice(`${snapshot.type === "base_inicial" ? "Base inicial" : "Atualização"} salva no banco Google ✓ Quem abrir o link já vê estes mesmos números.`, "ok");
+    setNotice(`${snapshot.type === "base_inicial" ? "Base fixa do dia" : "Atualização"} salva ✓ Quem abrir o link já vê estes mesmos números.`, "ok");
   });
   return sheetsQueue;
 }
@@ -227,7 +214,7 @@ async function getSheetsHistory() {
     const response = await fetch(`${config.url}${sep}action=history`, { credentials: "omit" });
     return JSON.parse(await response.text());
   } catch {
-    return { ok: false, error: "Não consegui ler o banco Google. Confira se a implantação está com acesso para \"Qualquer pessoa\"." };
+    return { ok: false, error: "não consegui ler os dados salvos" };
   }
 }
 
@@ -239,7 +226,7 @@ async function loadSheetsHistory() {
     if (viaGet && Array.isArray(viaGet.history)) result = Object.assign({ ok: true }, viaGet);
   }
   if (!result.ok) {
-    setNotice("Banco Google: " + (result.error || "erro desconhecido"), "error");
+    setNotice("Não consegui carregar os dados: " + (result.error || "erro desconhecido") + ". Atualize a página (F5).", "error");
     return false;
   }
   return applyDatabasePayload(result);
@@ -686,16 +673,16 @@ async function loadSavedState() {
   }
   const hasSheets = !!sheetsConfig().url;
   if (hasSheets) {
-    // Banco Google é a única fonte: todo mundo vê o mesmo número
+    // dados salvos sao a unica fonte: todo mundo ve o mesmo numero
     state.baseline = [];
     state.manualStatus = {};
     state.history = [];
     state.latestKeys = null;
     state.latestFileName = "";
     state.baselineFileName = "";
-    setNotice("Buscando os dados no banco Google...");
+    setNotice("Carregando dados do painel...");
     const ok = await loadSheetsHistory();
-    if (ok && !state.baseline.length) setNotice("Banco Google conectado. Ainda não há base inicial enviada.", "");
+    if (ok && !state.baseline.length) setNotice("Ainda não há base fixa enviada. Carregue a base da manhã para começar.", "");
     return;
   }
   state.baseline = await dbGet("baseline", []);
@@ -916,9 +903,11 @@ function renderSummary(records) {
   els.dueSoon.textContent = number(dueSoon);
   els.progress.textContent = total ? `${Math.round((treated / total) * 100)}%` : "0%";
   const monthly = calculateMonthly();
-  els.monthRateCount.textContent = `${monthly.current.rate}%`;
+  els.monthRateCount.textContent = pctText(monthly.current.rate);
+  const totalLabel = document.getElementById("totalLabel");
+  if (totalLabel) totalLabel.innerHTML = state.baselineDay ? `Volumetria diária <span class="card-sub">base fixa de ${esc(shortDay(state.baselineDay))}</span>` : "Volumetria diária";
   els.resultText.textContent = document.body.dataset.view === "monthly"
-    ? `Mês ${monthly.current.month || "-"}: ${number(monthly.current.eligible)} EXOC(s), ${number(monthly.current.treated)} tratada(s) em 24h, resultado ${monthly.current.rate}%.`
+    ? monthlyResultText(monthly)
     : `${number(records.length)} EXOC(s) na visão atual. Prazo contado por Visitado em; se vazio, Data Solicitação.`;
   els.latestDate.textContent = state.latestFileName || "não enviada";
   els.baselineDate.textContent = state.baselineFileName || (state.baseline.length ? "carregada" : "não carregada");
@@ -1071,88 +1060,179 @@ function addSnapshot(fileName, records, type = "atualizacao") {
   syncSnapshotToSheets(snapshot);
 }
 
+const MONTH_NAMES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+
+function shortDay(dateKey) {
+  return dateKey && dateKey.length >= 10 ? `${dateKey.slice(8, 10)}/${dateKey.slice(5, 7)}` : (dateKey || "-");
+}
+
+function monthLabel(monthKey) {
+  if (!monthKey || monthKey.length < 7) return monthKey || "-";
+  return `${MONTH_NAMES[+monthKey.slice(5, 7) - 1] || monthKey.slice(5, 7)}/${monthKey.slice(0, 4)}`;
+}
+
+function hourLabel(iso) {
+  const d = new Date(iso || "");
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+// Regra da meta 24h (por dia):
+// - volumetria do dia = base fixa da manha (1a base do dia), ja tratada pelas regras
+// - entram as que ja estavam vencidas E as que ainda nao venceram
+// - dentro da meta = nao aparece mais na base fixa do dia seguinte
+// - fora da meta  = continua na base fixa do dia seguinte (nao tratada de um dia p/ o outro)
+// - o ultimo dia fica "em andamento" ate chegar a proxima base fixa
 function calculateMonthly() {
   const hist = fixedDailyHistory(state.history);
   const fDir = normalizeFilterValues(state.filters.diretoria), fMic = normalizeFilterValues(state.filters.micro);
-  hist.forEach((snap) => { snap._keySet = new Set(snap.keys || []); });
+  const seenBefore = new Set();
+  const latest = state.latestSnap;
+  const days = [];
   const items = [];
   hist.forEach((snap, index) => {
-    const next = hist.find((candidate, i) => i > index && candidate.dateKey > snap.dateKey);
+    const next = hist[index + 1] || null;
+    const nextKeys = next ? new Set(next.keys || (next.records || []).map((r) => r.key)) : null;
+    const partialKeys = !next && latest && latest.dateKey === snap.dateKey && latest.type !== "base_inicial" ? new Set(latest.keys || []) : null;
+    const baseAt = Date.parse(snap.uploadedAt || "") || 0;
+    const day = {
+      day: snap.dateKey, month: snap.dateKey.slice(0, 7), fileName: snap.fileName || "", uploadedAt: snap.uploadedAt || "",
+      closedBy: next ? next.dateKey : "", partialAt: partialKeys ? latest.uploadedAt : "",
+      total: 0, novas: 0, vindas: 0, vencidas: 0, treated: 0, late: 0, open: 0, partialTreated: 0,
+    };
     (snap.records || []).forEach((record) => {
       const parts = String(record.key).split("|");
+      const nova = !seenBefore.has(record.key);
+      const vencidaNaExtracao = !!(record.referenceMs && baseAt && record.referenceMs + 864e5 < baseAt);
       const it = {
         key: record.key,
-        solicitacao: record.solicitacao != null ? record.solicitacao : (parts[0] != null ? parts[0] : ""),
-        ligacao: record.ligacao != null ? record.ligacao : (parts[1] != null ? parts[1] : ""),
-        servico: record.servico != null ? record.servico : "",
+        day: snap.dateKey,
+        month: day.month,
+        solicitacao: record.solicitacao != null ? record.solicitacao : (parts[0] || ""),
+        ligacao: record.ligacao != null ? record.ligacao : (parts[1] || ""),
+        codigoServico: record.codigoServico || parts[2] || "",
+        servico: record.servico || "",
         grupoServico: record.grupoServico || serviceGroupFor(parts[2] || record.codigoServico || record.servico),
-        procxCoi: record.procxCoi != null ? record.procxCoi : "",
+        procxCoi: record.procxCoi || "",
         localidade: record.localidade || "",
         diretoria: record.diretoria || "",
         micro: record.micro || "",
-        referenceMs: record.referenceMs,
-        firstIndex: index,
-        firstDate: snap.dateKey,
-        month: snap.dateKey && snap.dateKey.length >= 7 ? snap.dateKey.slice(0, 7) : "Sem data",
-        day: snap.dateKey || "Sem data",
-        saiuEm: "",
+        ocorrencia: record.descricaoEncerramento || "",
+        visitadoEm: record.visitadoEm || record.referenceDate || "",
+        entrada: nova ? "Nova no dia" : "Vinda de dia anterior",
+        vencidaNaExtracao,
+        conferidoEm: next ? next.dateKey : "",
+        situacao: "",
       };
+      if (!next) {
+        it.situacao = partialKeys && !partialKeys.has(record.key) ? "Em andamento (já saiu)" : "Em andamento";
+      } else {
+        it.situacao = nextKeys.has(record.key) ? "Fora da meta" : "Tratada na meta";
+      }
       if (!fDir.includes("todos") && !fDir.includes(it.diretoria)) return;
       if (!fMic.includes("todos") && !fMic.includes(it.micro)) return;
       if (!filterMatches("grupoServico", it.grupoServico || "Sem grupo")) return;
-      if (!next) it.situacao = "Aguardando";
-      else if (!next._keySet.has(it.key)) {
-        it.situacao = "Tratada em 24h";
-        it.saiuEm = next.dateKey;
-      } else {
-        const later = hist.find((candidate, i) => i > index && !candidate._keySet.has(it.key));
-        it.situacao = later ? "Tratada fora das 24h" : "Vencida em aberto";
-        it.saiuEm = later ? later.dateKey : "";
+      day.total += 1;
+      if (nova) day.novas += 1; else day.vindas += 1;
+      if (vencidaNaExtracao) day.vencidas += 1;
+      if (it.situacao === "Tratada na meta") day.treated += 1;
+      else if (it.situacao === "Fora da meta") day.late += 1;
+      else {
+        day.open += 1;
+        if (it.situacao === "Em andamento (já saiu)") day.partialTreated += 1;
       }
       items.push(it);
     });
+    (snap.records || []).forEach((record) => seenBefore.add(record.key));
+    days.push(day);
   });
   const months = new Map();
-  items.forEach((it) => {
-    if (!months.has(it.month)) months.set(it.month, { month: it.month, eligible: 0, treated: 0, late: 0, waiting: 0, rate: 0 });
-    const m = months.get(it.month);
-    m.eligible += 1;
-    if (it.situacao === "Tratada em 24h") m.treated += 1;
-    else if (it.situacao === "Aguardando") m.waiting += 1;
-    else m.late += 1;
+  days.forEach((d) => {
+    if (!months.has(d.month)) months.set(d.month, { month: d.month, eligible: 0, treated: 0, late: 0, waiting: 0, rate: 0, days: 0 });
+    const m = months.get(d.month);
+    m.days += 1;
+    m.eligible += d.total;
+    m.treated += d.treated;
+    m.late += d.late;
+    m.waiting += d.open;
   });
   const rows = Array.from(months.values()).sort((a, b) => a.month.localeCompare(b.month));
-  rows.forEach((r) => { r.rate = r.eligible ? Math.round((r.treated / r.eligible) * 100) : 0; });
-  const dated = rows.filter((r) => r.month !== "Sem data");
-  return { rows, items, current: (dated.length ? dated[dated.length - 1] : null) || { month: "", eligible: 0, treated: 0, late: 0, waiting: 0, rate: 0 } };
+  rows.forEach((r) => { r.rate = rateOf(r.treated, r.late); });
+  const empty = { month: "", eligible: 0, treated: 0, late: 0, waiting: 0, rate: 0, days: 0 };
+  const selected = rows.find((r) => r.month === state.selectedMonth) || rows[rows.length - 1] || empty;
+  return { rows, days, items, current: rows[rows.length - 1] || empty, selected };
+}
+
+function rateOf(treated, late) {
+  const closed = treated + late;
+  return closed ? Math.round((treated / closed) * 1000) / 10 : 0;
+}
+
+function pctText(value) {
+  return `${String(value).replace(".", ",")}%`;
+}
+
+// todos os dias do mes (ate hoje, se for o mes atual), com ou sem base
+function monthDayRows(monthly, monthKey) {
+  const byDay = new Map(monthly.days.filter((d) => d.month === monthKey).map((d) => [d.day, d]));
+  if (!monthKey) return [];
+  const year = +monthKey.slice(0, 4), month = +monthKey.slice(5, 7);
+  const lastOfMonth = new Date(year, month, 0).getDate();
+  const today = todayKey();
+  const lastDay = today.slice(0, 7) === monthKey ? +today.slice(8, 10) : lastOfMonth;
+  const list = [];
+  for (let d = 1; d <= lastDay; d += 1) {
+    const key = `${monthKey}-${String(d).padStart(2, "0")}`;
+    list.push(byDay.get(key) || { day: key, noBase: true });
+  }
+  byDay.forEach((d, key) => { if (!list.some((x) => x.day === key)) list.push(d); });
+  return list.sort((a, b) => a.day.localeCompare(b.day));
+}
+
+function daySituation(d) {
+  if (d.noBase) return "Sem base fixa";
+  if (d.closedBy) return `Fechado (conferido na base de ${shortDay(d.closedBy)})`;
+  if (d.partialAt) return `Em andamento: ${number(d.partialTreated)} já saíram até ${hourLabel(d.partialAt)}`;
+  return "Em andamento (aguardando atualização)";
+}
+
+function monthTotals(list) {
+  return list.filter((d) => !d.noBase).reduce((a, d) => {
+    ["total", "novas", "vindas", "vencidas", "treated", "late", "open"].forEach((k) => { a[k] += d[k]; });
+    return a;
+  }, { total: 0, novas: 0, vindas: 0, vencidas: 0, treated: 0, late: 0, open: 0 });
+}
+
+function fillMonthSelect(monthly) {
+  const select = document.getElementById("monthSelect");
+  if (!select) return;
+  const months = monthly.rows.map((r) => r.month);
+  if (!months.includes(state.selectedMonth)) state.selectedMonth = months[months.length - 1] || "";
+  const html = months.slice().reverse().map((m) => `<option value="${esc(m)}">${esc(monthLabel(m))}</option>`).join("");
+  if (select.innerHTML !== html) select.innerHTML = html;
+  select.value = state.selectedMonth;
 }
 
 function renderMonthly() {
   const monthly = calculateMonthly();
-  const selectedMonth = monthly.current.month || "";
-  const row = monthly.current || { eligible: 0, treated: 0, late: 0, waiting: 0, rate: 0 };
+  fillMonthSelect(monthly);
+  const row = monthly.selected;
   els.monthEligible.textContent = number(row.eligible);
   els.monthTreated.textContent = number(row.treated);
   els.monthPending.textContent = number(row.late);
   document.getElementById("monthWaiting").textContent = number(row.waiting);
-  els.monthRate.textContent = `${row.rate}%`;
-  const days = new Map();
-  monthly.items.filter((it) => it.month === selectedMonth).forEach((it) => {
-    if (!days.has(it.day)) days.set(it.day, { day: it.day, total: 0, treated: 0, late: 0, waiting: 0 });
-    const d = days.get(it.day);
-    d.total += 1;
-    if (it.situacao === "Tratada em 24h") d.treated += 1;
-    else if (it.situacao === "Aguardando") d.waiting += 1;
-    else d.late += 1;
-  });
-  const list = Array.from(days.values()).sort((a, b) => a.day.localeCompare(b.day));
-  const line = (label, d, bold) => {
-    const pct = d.total ? Math.round((d.treated / d.total) * 100) : 0;
-    const cells = [label, number(d.total), number(d.treated), number(d.late), number(d.waiting), `${pct}%`];
-    return `<tr>${cells.map((c) => `<td>${bold ? `<strong>${esc(c)}</strong>` : esc(c)}</td>`).join("")}</tr>`;
-  };
-  const total = list.reduce((a, d) => ({ total: a.total + d.total, treated: a.treated + d.treated, late: a.late + d.late, waiting: a.waiting + d.waiting }), { total: 0, treated: 0, late: 0, waiting: 0 });
-  els.monthlyBody.innerHTML = list.map((d) => line(d.day.length === 10 ? `${d.day.slice(8)}/${d.day.slice(5, 7)}` : d.day, d, false)).join("") + (list.length ? line("Total do mês", total, true) : "");
+  els.monthRate.textContent = pctText(row.rate);
+  const list = monthDayRows(monthly, row.month);
+  const cell = (v) => `<td>${esc(v)}</td>`;
+  const body = list.map((d) => {
+    if (d.noBase) return `<tr class="no-base">${cell(shortDay(d.day))}${"<td>—</td>".repeat(7)}${cell(daySituation(d))}</tr>`;
+    const closed = d.treated + d.late;
+    return `<tr>${[shortDay(d.day), number(d.total), number(d.novas), number(d.vindas), number(d.vencidas), number(d.treated), number(d.late), closed ? pctText(rateOf(d.treated, d.late)) : "—", daySituation(d)].map(cell).join("")}</tr>`;
+  }).join("");
+  const t = monthTotals(list);
+  const totalRow = list.some((d) => !d.noBase)
+    ? `<tr class="total-row">${["Total do mês", number(t.total), number(t.novas), number(t.vindas), number(t.vencidas), number(t.treated), number(t.late), pctText(rateOf(t.treated, t.late)), t.open ? `${number(t.open)} em andamento` : "Mês fechado"].map(cell).join("")}</tr>`
+    : `<tr><td colspan="9">Nenhuma base fixa neste mês ainda.</td></tr>`;
+  els.monthlyBody.innerHTML = body + totalRow;
 }
 function pivotValue(record, field) {
   if (field === "dia") return dayLabel(record.visitadoEmMs || record.referenceMs);
@@ -1374,29 +1454,19 @@ function dailyExportRows() {
 
 function monthlyExportData() {
   const monthly = calculateMonthly();
-  const selectedMonth = monthly.current.month || "sem-mes";
-  const items = monthly.items.filter((it) => it.month === selectedMonth).sort((a, b) => a.day.localeCompare(b.day));
-  const detailHeaders = ["Dia de entrada", "Numero Solicitacao", "Numero Ligacao", "Diretoria", "Micro", "Localidade", "Servico", "Grupo de servico", "RESPONSAVEL", "Situacao 24h", "Saiu da base em"];
-  const detailRows = items.map((it) => [it.day, it.solicitacao, it.ligacao, it.diretoria, it.micro, it.localidade, it.servico, it.grupoServico || "Sem grupo", it.procxCoi, it.situacao, it.saiuEm]);
-  const days = new Map();
-  items.forEach((it) => {
-    if (!days.has(it.day)) days.set(it.day, { day: it.day, total: 0, treated: 0, late: 0, waiting: 0 });
-    const d = days.get(it.day);
-    d.total += 1;
-    if (it.situacao === "Tratada em 24h") d.treated += 1;
-    else if (it.situacao === "Aguardando") d.waiting += 1;
-    else d.late += 1;
-  });
-  const summaryHeaders = ["Dia", "EXOCs", "Tratadas em 24h", "Fora das 24h", "Aguardando", "% 24h"];
-  const summaryRows = Array.from(days.values()).sort((a, b) => a.day.localeCompare(b.day)).map((d) => [
-    d.day,
-    d.total,
-    d.treated,
-    d.late,
-    d.waiting,
-    d.total ? `${Math.round((d.treated / d.total) * 100)}%` : "0%",
-  ]);
-  return { selectedMonth, detailHeaders, detailRows, summaryHeaders, summaryRows };
+  const month = monthly.selected.month || "sem-mes";
+  const list = monthDayRows(monthly, monthly.selected.month);
+  const summaryHeaders = ["Dia", "Arquivo da base fixa", "Base fixa (volumetria)", "Novas no dia", "Vindas de dias anteriores", "Ja vencidas na extracao", "Tratadas na meta", "Nao tratadas -> dia seguinte (fora da meta)", "Em andamento", "% na meta", "Situacao do dia"];
+  const summaryRows = list.map((d) => d.noBase
+    ? [shortDay(d.day) + "/" + d.day.slice(0, 4), "", "", "", "", "", "", "", "", "", daySituation(d)]
+    : [shortDay(d.day) + "/" + d.day.slice(0, 4), d.fileName, d.total, d.novas, d.vindas, d.vencidas, d.treated, d.late, d.open, (d.treated + d.late) ? pctText(rateOf(d.treated, d.late)) : "", daySituation(d)]);
+  const t = monthTotals(list);
+  summaryRows.push(["Total do mes", "", t.total, t.novas, t.vindas, t.vencidas, t.treated, t.late, t.open, pctText(rateOf(t.treated, t.late)), t.open ? "Mes com dia em andamento" : "Mes fechado"]);
+  const detailHeaders = ["Dia da base fixa", "Numero Solicitacao", "Numero Ligacao", "Codigo do servico", "Servico", "Grupo de servico", "Ocorrencia", "Diretoria", "Micro", "Localidade", "RESPONSAVEL", "Visitado em", "Entrada", "Ja vencida na extracao", "Resultado 24h", "Conferido na base de"];
+  const detailRows = monthly.items.filter((it) => it.month === monthly.selected.month)
+    .sort((a, b) => a.day.localeCompare(b.day) || String(a.solicitacao).localeCompare(String(b.solicitacao), "pt-BR", { numeric: true }))
+    .map((it) => [shortDay(it.day) + "/" + it.day.slice(0, 4), it.solicitacao, it.ligacao, it.codigoServico, it.servico, it.grupoServico || "Sem grupo", it.ocorrencia, it.diretoria, it.micro, it.localidade, it.procxCoi, it.visitadoEm, it.entrada, it.vencidaNaExtracao ? "Sim" : "Nao", it.situacao, it.conferidoEm ? shortDay(it.conferidoEm) : ""]);
+  return { month, summaryHeaders, summaryRows, detailHeaders, detailRows };
 }
 function exportCsv() {
   exportDailyCsv();
@@ -1412,17 +1482,33 @@ async function exportDailyXlsx() {
   await exportWorkbook("base-diaria-exoc.xlsx", [{ name: "Diario", rows: [data.headers].concat(data.rows) }]);
 }
 
-function exportMonthly() {
-  const data = monthlyExportData();
-  download(`exoc-mensal-${data.selectedMonth}.csv`, csvText(data.detailHeaders, data.detailRows), "text/csv;charset=utf-8");
+function exportFormat() {
+  const sel = document.getElementById("exportFormat");
+  return sel ? sel.value : "xlsx";
 }
 
-async function exportMonthlyXlsx() {
+async function exportMonthTable(kind) {
   const data = monthlyExportData();
-  await exportWorkbook(`exoc-mensal-${data.selectedMonth}.xlsx`, [
-    { name: "Resumo mensal", rows: [data.summaryHeaders].concat(data.summaryRows) },
-    { name: "Base mensal", rows: [data.detailHeaders].concat(data.detailRows) },
-  ]);
+  const unified = kind === "unificado";
+  const headers = unified ? data.summaryHeaders : data.detailHeaders;
+  const rows = unified ? data.summaryRows : data.detailRows;
+  const base = `exoc-24h-${unified ? "unificado" : "analitico"}-${data.month}`;
+  if (exportFormat() === "csv") {
+    download(`${base}.csv`, csvText(headers, rows), "text/csv;charset=utf-8");
+    return;
+  }
+  const ok = await ensureXLSX();
+  if (!ok || !window.XLSX) {
+    setNotice("Não consegui gerar o Excel agora; baixei em CSV (abre no Excel normalmente).", "error");
+    download(`${base}.csv`, csvText(headers, rows), "text/csv;charset=utf-8");
+    return;
+  }
+  await exportWorkbook(`${base}.xlsx`, [{ name: unified ? "Resumo por dia" : "Analitico", rows: [headers].concat(rows) }]);
+}
+function monthlyResultText(monthly) {
+  const m = monthly.selected;
+  if (!m.month) return "Nenhuma base fixa salva ainda.";
+  return `${monthLabel(m.month)}: ${number(m.days)} dia(s) com base, volumetria ${number(m.eligible)}, ${number(m.treated)} na meta, ${number(m.late)} fora da meta, resultado ${pctText(m.rate)}.`;
 }
 
 function renderLastUpdate() {
@@ -1453,7 +1539,6 @@ async function refreshFromSheets() {
     const before = state.lastUpdate && state.lastUpdate.at;
     if (await loadSheetsHistory()) {
       if (state.lastUpdate && state.lastUpdate.at !== before) {
-        state.baseline = applyBusinessRules(state.baseline);
         render();
         setNotice("Painel atualizado com a última base enviada.", "ok");
       }
@@ -1471,11 +1556,8 @@ async function loadBaseline() {
   loadInternalAuxiliaries();
   await applyPreloadedTrackingState();
   if (state.baseline.length) {
-    state.baseline = applyBusinessRules(state.baseline);
     await saveState();
-  }
-  if (state.baseline.length) {
-    setNotice("Base inicial fixa carregada. Suba uma nova base para medir o progresso.", "ok");
+    setNotice(`Base fixa do dia ${shortDay(state.baselineDay)} carregada${state.latestFileName ? ", com a última atualização aplicada" : ""}.`, "ok");
   }
   render();
 }
@@ -1490,6 +1572,8 @@ els.baselineFile.addEventListener("change", async (event) => {
     state.duplicateCount = parsed.duplicates;
     state.funnel = parsed.funnel;
     state.baselineFileName = file.name;
+    state.baselineDay = todayKey();
+    state.latestSnap = null;
     state.latestKeys = null;
     state.latestFileName = "";
     state.manualStatus = {};
@@ -1517,6 +1601,7 @@ els.latestFile.addEventListener("change", async (event) => {
     const latest = await readFile(file);
     state.latestKeys = new Set(latest.rows.map((record) => record.key));
     state.latestFileName = file.name;
+    state.latestSnap = { dateKey: todayKey(), type: "atualizacao", uploadedAt: new Date().toISOString(), fileName: file.name, keys: Array.from(state.latestKeys) };
     addSnapshot(file.name, latest.rows, "atualizacao");
     await saveState();
     setNotice("Atualização aplicada. O painel recalculou tratados, pendentes e prazo de 24h.", "ok");
@@ -1538,20 +1623,21 @@ els.stateFile.addEventListener("change", async (event) => {
     state.baselineFileName = payload.baselineFileName || "";
     state.duplicateCount = payload.duplicateCount || 0;
     state.history = payload.history || [];
+    state.baselineDay = (state.history.length ? state.history[state.history.length - 1].dateKey : "") || "";
     state.latestKeys = payload.latestKeys ? new Set(payload.latestKeys) : null;
-    state.baseline = applyBusinessRules(payload.baseline || []);
+    state.baseline = payload.baseline || [];
     await saveState();
     render();
     const toSend = (state.history || []).filter((snap) => snap && snap.dateKey);
     if (sheetsConfig().url && toSend.length) {
       for (let i = 0; i < toSend.length; i += 1) {
-        setNotice(`Acompanhamento importado. Enviando ao banco Google: dia ${i + 1} de ${toSend.length}...`, "ok");
+        setNotice(`Acompanhamento importado. Salvando: dia ${i + 1} de ${toSend.length}...`, "ok");
         const snap = Object.assign({}, toSend[i], { type: "base_inicial" });
         delete snap._keySet;
         await syncSnapshotToSheets(snap);
         await new Promise((r) => setTimeout(r, 800));
       }
-      setNotice(`Acompanhamento importado e enviado ao banco Google (${toSend.length} dia(s)).`, "ok");
+      setNotice(`Acompanhamento importado e salvo (${toSend.length} dia(s)).`, "ok");
     } else {
       setNotice("Acompanhamento importado.", "ok");
     }
@@ -1566,7 +1652,6 @@ els.exportState.addEventListener("click", exportTracking);
 els.exportCsv.addEventListener("click", exportCsv);
 document.getElementById("dailyExportCsv").addEventListener("click", exportDailyCsv);
 document.getElementById("dailyExportXlsx").addEventListener("click", exportDailyXlsx);
-els.sheetsConfig.addEventListener("click", configureSheetsSync);
 els.clearData.addEventListener("click", async () => {
   if (!confirm("Limpar a base fixa e o acompanhamento salvo neste navegador?")) return;
   localStorage.removeItem(STORAGE_KEY);
@@ -1628,10 +1713,7 @@ function setView(view) {
       : view === "charts"
         ? "Dinâmica para envio aos programadores"
         : "Acompanhamento diário das EXOCs";
-  if (view === "monthly") {
-    const monthly = calculateMonthly();
-    els.resultText.textContent = `Mês ${monthly.current.month || "-"}: ${number(monthly.current.eligible)} EXOC(s), ${number(monthly.current.treated)} tratada(s) em 24h, resultado ${monthly.current.rate}%.`;
-  }
+  if (view === "monthly") els.resultText.textContent = monthlyResultText(calculateMonthly());
 }
 
 function on(element, eventName, handler) {
@@ -1641,8 +1723,9 @@ function on(element, eventName, handler) {
 on(els.viewTable, "click", () => setView("table"));
 on(els.viewCharts, "click", () => { setView("charts"); render(); });
 on(els.viewMonthly, "click", () => setView("monthly"));
-on(document.getElementById("monthExport"), "click", exportMonthly);
-on(document.getElementById("monthExportXlsx"), "click", exportMonthlyXlsx);
+on(document.getElementById("monthExportSummary"), "click", () => exportMonthTable("unificado"));
+on(document.getElementById("monthExportDetail"), "click", () => exportMonthTable("analitico"));
+on(document.getElementById("monthSelect"), "change", (event) => { state.selectedMonth = event.target.value; render(); });
 on(els.pivotRow1, "change", render);
 on(els.pivotRow2, "change", render);
 on(els.pivotColumn, "change", render);

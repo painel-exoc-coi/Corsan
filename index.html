@@ -46,18 +46,17 @@
           </label>
           <button id="exportState" class="button" type="button">Exportar acompanhamento</button>
           <button id="exportCsv" class="button" type="button">Gerar base tratada</button>
-          <button id="sheetsConfig" class="button" type="button">Banco Google</button>
           <button id="clearData" class="button danger-button" type="button">Limpar dados</button>
         </div>
 
       <section class="notice" id="loadNotice">
-        Carregue a base extraída do sistema. O painel mostra somente responsabilidade COI, Visitado em 2026 e remove EXOCs do dia atual.
+        Carregando dados do painel...
       </section>
       <section class="notice" id="funnelBox" hidden></section>
 
       <section class="summary-grid" aria-label="Resumo das EXOCs">
         <article>
-          <span>Volumetria diária</span>
+          <span id="totalLabel">Volumetria diária</span>
           <strong id="totalCount">0</strong>
         </article>
         <article>
@@ -81,7 +80,7 @@
           <strong id="dueSoonCount">0</strong>
         </article>
         <article>
-          <span>Tratadas 24h no mês</span>
+          <span>Resultado 24h no mês</span>
           <strong id="monthRateCount">0%</strong>
         </article>
       </section>
@@ -194,28 +193,42 @@
           </div>
 
           <div id="monthlyView" class="monthly hidden">
-            <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px">
-              <button id="monthExport" class="button" type="button">Exportar mensal (CSV)</button>
-              <button id="monthExportXlsx" class="button" type="button">Exportar mensal (XLSX)</button>
+            <div class="month-toolbar">
+              <div class="field">
+                <label for="monthSelect">Mês</label>
+                <select id="monthSelect"></select>
+              </div>
+              <div class="field">
+                <label for="exportFormat">Formato</label>
+                <select id="exportFormat">
+                  <option value="xlsx">Excel (.xlsx)</option>
+                  <option value="csv">CSV</option>
+                </select>
+              </div>
+              <button id="monthExportSummary" class="button primary" type="button">Extrair unificado (por dia)</button>
+              <button id="monthExportDetail" class="button" type="button">Extrair analítico (por EXOC)</button>
             </div>
             <div class="monthly-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
-              <article><span>Total de EXOCs no histórico mensal</span><strong id="monthEligible">0</strong></article>
-              <article><span>Tratadas em 24h</span><strong id="monthTreated">0</strong></article>
-              <article><span>Fora das 24h</span><strong id="monthPending">0</strong></article>
-              <article><span>Aguardando 1ª verificação</span><strong id="monthWaiting">0</strong></article>
-              <article><span>Resultado 24h</span><strong id="monthRate">0%</strong></article>
+              <article><span>Volumetria do mês (bases fixas)</span><strong id="monthEligible">0</strong></article>
+              <article><span>Tratadas dentro da meta</span><strong id="monthTreated">0</strong></article>
+              <article><span>Fora da meta</span><strong id="monthPending">0</strong></article>
+              <article><span>Em andamento (dia aberto)</span><strong id="monthWaiting">0</strong></article>
+              <article><span>Resultado do mês</span><strong id="monthRate">0%</strong></article>
             </div>
-            <p class="notice" style="margin:10px 0">Mostra tudo que entrou como EXOC no histórico mensal importado, sem repetir EXOC. Conta como tratada em 24h a que saiu da base seguinte à primeira aparição. Respeita os filtros Diretoria e Micro.</p>
+            <p class="notice" style="margin:10px 0">Cada dia usa a <strong>base fixa da manhã</strong> (a 1ª do dia), já tratada, com as vencidas e as que ainda não venceram. Dentro da meta = saiu até a base fixa do dia seguinte. Fora da meta = continuou na base do dia seguinte (não tratada de um dia para o outro). O dia de hoje fica <em>em andamento</em> e só entra no resultado quando a próxima base fixa chegar. Respeita os filtros Diretoria, Micro e Grupo de serviço.</p>
             <div class="table-wrap compact">
               <table>
                 <thead>
                   <tr>
-                    <th>Dia de entrada</th>
-                    <th>EXOCs</th>
-                    <th>Tratadas em 24h</th>
-                    <th>Fora das 24h</th>
-                    <th>Aguardando</th>
-                    <th>% 24h</th>
+                    <th>Dia</th>
+                    <th>Base fixa</th>
+                    <th>Novas no dia</th>
+                    <th>Vindas de dias anteriores</th>
+                    <th>Já vencidas na extração</th>
+                    <th>Tratadas na meta</th>
+                    <th>Não tratadas → dia seguinte</th>
+                    <th>% na meta</th>
+                    <th>Situação do dia</th>
                   </tr>
                 </thead>
                 <tbody id="monthlyBody"></tbody>
