@@ -142,10 +142,36 @@ function sheetsConfig() {
   return { url: DEFAULT_SHEETS_URL, token: "" };
 }
 
+// Bases gravadas antes das regras atuais podem ter EXOCs que nao deveriam entrar
+// (ex.: "Executado"). Limpa usando a data da PROPRIA base, entao o numero e sempre o mesmo.
+function sanitizeStoredRecords(records, dateKey) {
+  return (records || []).filter((r) => {
+    const temSituacao = [r.situacao, r.tipoEncerramento, r.descricaoEncerramento].some((v) => normalize(v));
+    if (temSituacao && !encerradaComOcorrencia(r)) return false;
+    if (r.visitadoEmMs) {
+      if (new Date(r.visitadoEmMs).getFullYear() <= 2025) return false;
+      if (dateKey && dateKeyFromMs(r.visitadoEmMs) >= dateKey) return false;
+    }
+    const code = serviceCode(r.codigoServico || String(r.key || "").split("|")[2] || "");
+    const info = code ? state.serviceMap[code] : null;
+    const resp = info ? normalize(info.responsabilidade) : normalize(r.procxCoi);
+    if (resp && normKey(resp) !== "COI") return false;
+    return true;
+  });
+}
+
+function sanitizeSnapshot(snap) {
+  if (!snap || !Array.isArray(snap.records) || !snap.records.length) return snap;
+  const dateKey = normalizeHistoryDateKey(snap.dateKey);
+  const records = sanitizeStoredRecords(snap.records, dateKey);
+  return Object.assign({}, snap, { dateKey, records, keys: records.map((r) => r.key) });
+}
+
 function applyDatabasePayload(payload) {
-  const remote = fixedDailyHistory(payload && Array.isArray(payload.history) ? payload.history : []);
+  if (!Object.keys(state.serviceMap || {}).length) loadInternalAuxiliaries();
+  const remote = fixedDailyHistory(payload && Array.isArray(payload.history) ? payload.history : []).map(sanitizeSnapshot);
   const latest = (payload && payload.latest) || (remote.length ? remote[remote.length - 1] : null) || null;
-  const currentBase = (payload && payload.currentBase) || (remote.length ? remote[remote.length - 1] : null) || null;
+  const currentBase = remote.length ? remote[remote.length - 1] : sanitizeSnapshot(payload && payload.currentBase) || null;
   if (remote.length) state.history = remote;
   const stamps = [latest, currentBase].filter(Boolean).map((snap) => ({ at: snap.uploadedAt || "", file: snap.fileName || "" }))
     .sort((a, b) => String(b.at).localeCompare(String(a.at)));
@@ -157,7 +183,7 @@ function applyDatabasePayload(payload) {
     state.baselineDay = currentBase.dateKey || "";
   }
   state.latestSnap = latest && latest.keys ? { dateKey: latest.dateKey, type: latest.type, uploadedAt: latest.uploadedAt, fileName: latest.fileName, keys: latest.keys } : null;
-  if (latest && latest.keys && latest.keys.length && (!state.baselineDay || latest.dateKey >= state.baselineDay)) {
+  if (latest && latest.keys && latest.type !== "base_inicial" && state.baselineDay && normalizeHistoryDateKey(latest.dateKey) === state.baselineDay) {
     state.latestKeys = new Set(latest.keys || []);
     state.latestFileName = latest.fileName || `Atualização de ${latest.dateKey}`;
   } else {
@@ -1551,9 +1577,9 @@ setInterval(refreshFromSheets, 5 * 60 * 1000);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshFromSheets(); });
 
 async function loadBaseline() {
+  loadInternalAuxiliaries();
   await loadSavedState();
   ensureXLSX();
-  loadInternalAuxiliaries();
   await applyPreloadedTrackingState();
   if (state.baseline.length) {
     await saveState();
@@ -1562,27 +1588,32 @@ async function loadBaseline() {
   render();
 }
 
+async function fixBaseOfDay(file, parsed) {
+  state.baseline = parsed.rows;
+  state.duplicateCount = parsed.duplicates;
+  state.funnel = parsed.funnel;
+  state.baselineFileName = file.name;
+  state.baselineDay = todayKey();
+  state.latestSnap = null;
+  state.latestKeys = null;
+  state.latestFileName = "";
+  state.manualStatus = {};
+  addSnapshot(file.name, state.baseline, "base_inicial");
+  await saveState();
+}
+
 els.baselineFile.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
   try {
-    setNotice("Lendo e tratando a base inicial...");
+    if (state.baselineDay === todayKey() && !confirm(`Já existe a base fixa de hoje (${state.baselineFileName}). Substituir pela "${file.name}"? Use isso só para corrigir uma base errada.`)) return;
+    setNotice("Lendo e tratando a base fixa do dia...");
     const parsed = await readFile(file);
-    state.baseline = parsed.rows;
-    state.duplicateCount = parsed.duplicates;
-    state.funnel = parsed.funnel;
-    state.baselineFileName = file.name;
-    state.baselineDay = todayKey();
-    state.latestSnap = null;
-    state.latestKeys = null;
-    state.latestFileName = "";
-    state.manualStatus = {};
-    addSnapshot(file.name, state.baseline, "base_inicial");
-    await saveState();
-    setNotice("Base inicial tratada e fixada. Agora suba as atualizações do dia para acompanhar o tratamento.", "ok");
+    await fixBaseOfDay(file, parsed);
+    setNotice(`Base fixa de ${shortDay(todayKey())} definida: ${number(parsed.rows.length)} EXOCs. Essa volumetria fica travada até a base de amanhã.`, "ok");
     render();
   } catch (error) {
-    setNotice(error.message || "Não foi possível ler a base inicial.", "error");
+    setNotice(error.message || "Não foi possível ler a base.", "error");
   } finally {
     event.target.value = "";
   }
@@ -1591,20 +1622,22 @@ els.baselineFile.addEventListener("change", async (event) => {
 els.latestFile.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
-  if (!state.baseline.length) {
-    setNotice("Carregue a base inicial antes de subir uma nova base.", "error");
-    event.target.value = "";
-    return;
-  }
   try {
-    setNotice("Lendo e tratando a atualização enviada...");
-    const latest = await readFile(file);
-    state.latestKeys = new Set(latest.rows.map((record) => record.key));
+    setNotice("Lendo e tratando a base enviada...");
+    const parsed = await readFile(file);
+    if (state.baselineDay !== todayKey()) {
+      // ainda nao tem base fixa hoje: esta e a 1a do dia, entao vira a fixa
+      await fixBaseOfDay(file, parsed);
+      setNotice(`Primeira base de hoje: virou a base fixa de ${shortDay(todayKey())} (${number(parsed.rows.length)} EXOCs). As próximas que subir hoje vão marcar o que foi tratado.`, "ok");
+      render();
+      return;
+    }
+    state.latestKeys = new Set(parsed.rows.map((record) => record.key));
     state.latestFileName = file.name;
     state.latestSnap = { dateKey: todayKey(), type: "atualizacao", uploadedAt: new Date().toISOString(), fileName: file.name, keys: Array.from(state.latestKeys) };
-    addSnapshot(file.name, latest.rows, "atualizacao");
+    addSnapshot(file.name, parsed.rows, "atualizacao");
     await saveState();
-    setNotice("Atualização aplicada. O painel recalculou tratados, pendentes e prazo de 24h.", "ok");
+    setNotice("Atualização aplicada sobre a base fixa de hoje. A volumetria não muda; só tratadas e não tratadas.", "ok");
     render();
   } catch (error) {
     setNotice(error.message || "Não foi possível ler a nova base.", "error");
