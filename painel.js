@@ -1038,18 +1038,8 @@ function snapshotDateFromRecords(records) {
   return maxMs ? dateKeyFromMs(maxMs) : todayKey();
 }
 
-function addSnapshot(fileName, records, type = "atualizacao") {
-  state.histVersion = (state.histVersion || 0) + 1;
-  const dateKey = todayKey();
-  state.lastUpdate = { at: new Date().toISOString(), file: fileName };
-  const snapshot = {
-    id: `${dateKey}-${type}`,
-    fileName,
-    type,
-    dateKey,
-    uploadedAt: new Date().toISOString(),
-    keys: records.map((record) => record.key),
-    records: records.map((record) => ({
+function slimRecords(records) {
+  return records.map((record) => ({
       key: record.key,
       referenceMs: record.referenceMs,
       referenceDate: record.referenceDate,
@@ -1069,7 +1059,21 @@ function addSnapshot(fileName, records, type = "atualizacao") {
       descricaoEncerramento: record.descricaoEncerramento,
       tipoEncerramento: record.tipoEncerramento,
       situacao: record.situacao,
-    })),
+    }));
+}
+
+function addSnapshot(fileName, records, type = "atualizacao") {
+  state.histVersion = (state.histVersion || 0) + 1;
+  const dateKey = todayKey();
+  state.lastUpdate = { at: new Date().toISOString(), file: fileName };
+  const snapshot = {
+    id: `${dateKey}-${type}`,
+    fileName,
+    type,
+    dateKey,
+    uploadedAt: new Date().toISOString(),
+    keys: records.map((record) => record.key),
+    records: slimRecords(records),
   };
   state.history = fixedDailyHistory(state.history);
   const existingSameDay = state.history.find((item) => item.dateKey === dateKey);
@@ -1128,7 +1132,7 @@ function calculateMonthlyNow() {
     const next = hist[index + 1] || null;
     const nextKeys = next ? new Set(next.keys || (next.records || []).map((r) => r.key)) : null;
     const partialKeys = !next && latest && latest.dateKey === snap.dateKey && latest.type !== "base_inicial" ? new Set(latest.keys || []) : null;
-    const baseAt = Date.parse(snap.uploadedAt || "") || 0;
+    const baseAt = Date.parse(snap.baseAt || snap.uploadedAt || "") || 0;
     const day = {
       day: snap.dateKey, month: snap.dateKey.slice(0, 7), fileName: snap.fileName || "", uploadedAt: snap.uploadedAt || "",
       closedBy: next ? next.dateKey : "", partialAt: partialKeys ? latest.uploadedAt : "",
@@ -1771,6 +1775,43 @@ on(els.viewCharts, "click", () => { setView("charts"); render(); });
 on(els.viewMonthly, "click", () => setView("monthly"));
 on(document.getElementById("monthExportSummary"), "click", () => exportMonthTable("unificado"));
 on(document.getElementById("monthExportDetail"), "click", () => exportMonthTable("analitico"));
+async function savePastBase(event) {
+  const file = event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  const dayInput = document.getElementById("pastDay");
+  const day = dayInput && dayInput.value;
+  const today = todayKey();
+  if (!day) { setNotice("Escolha primeiro o dia da base fixa.", "error"); return; }
+  if (day > today) { setNotice("Não dá para subir base de um dia futuro.", "error"); return; }
+  try {
+    setNotice(`Lendo e tratando a base fixa de ${shortDay(day)}...`);
+    const raw = await sheetRows(await file.arrayBuffer(), file.name);
+    const cleaned = cleanRows(raw);
+    const rows = applyBusinessRules(cleaned.rows, day);
+    const records = slimRecords(rows);
+    const snapshot = {
+      id: `${day}-base_inicial`, fileName: file.name, type: "base_inicial", dateKey: day,
+      uploadedAt: new Date().toISOString(),
+      baseAt: day === today ? new Date().toISOString() : new Date(`${day}T08:00:00`).toISOString(),
+      keys: records.map((r) => r.key), records,
+    };
+    state.history = fixedDailyHistory(state.history).filter((h) => h.dateKey !== day).concat([snapshot])
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    state.histVersion = (state.histVersion || 0) + 1;
+    if (day === today) {
+      state.baseline = rows; state.baselineDay = day; state.baselineFileName = file.name;
+      state.latestKeys = null; state.latestFileName = ""; state.latestSnap = null;
+    }
+    render();
+    await syncSnapshotToSheets(snapshot);
+    setNotice(`Base fixa de ${shortDay(day)} salva com ${number(records.length)} EXOCs tratadas (de ${number(raw.length)} linhas). A aba Mensal 24h já recalculou esse dia e o anterior.`, "ok");
+  } catch (error) {
+    setNotice(error.message || "Não foi possível ler a base.", "error");
+  }
+}
+on(document.getElementById("pastBaseFile"), "change", savePastBase);
+
 on(document.getElementById("monthSelect"), "change", (event) => { state.selectedMonth = event.target.value; render(); });
 on(els.pivotRow1, "change", render);
 on(els.pivotRow2, "change", render);

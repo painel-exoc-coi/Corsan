@@ -208,6 +208,17 @@
               <button id="monthExportSummary" class="button primary" type="button">Extrair unificado (por dia)</button>
               <button id="monthExportDetail" class="button" type="button">Extrair analítico (por EXOC)</button>
             </div>
+            <div class="month-toolbar past-base">
+              <div class="field">
+                <label for="pastDay">Dia da base fixa</label>
+                <input id="pastDay" type="date" />
+              </div>
+              <label class="button" id="pastBaseLabel">
+                <input id="pastBaseFile" type="file" accept=".xlsx,.xls,.xlsb,.csv" />
+                Subir/corrigir base fixa deste dia
+              </label>
+              <span class="past-hint">Use para dias anteriores: escolha a data e suba a base extraída pela manhã daquele dia. Substitui a base fixa salva nesse dia.</span>
+            </div>
             <div class="monthly-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
               <article><span>Volumetria do mês (bases fixas)</span><strong id="monthEligible">0</strong></article>
               <article><span>Tratadas dentro da meta</span><strong id="monthTreated">0</strong></article>
