@@ -173,6 +173,10 @@ function applyDatabasePayload(payload) {
   const latest = (payload && payload.latest) || (remote.length ? remote[remote.length - 1] : null) || null;
   const currentBase = remote.length ? remote[remote.length - 1] : sanitizeSnapshot(payload && payload.currentBase) || null;
   if (remote.length) state.history = remote;
+  state.histVersion = (state.histVersion || 0) + 1;
+  const raw = (payload && Array.isArray(payload.history) ? payload.history : []).map((x) => x.uploadedAt || "");
+  if (payload && payload.latest) raw.push(payload.latest.uploadedAt || "");
+  state.remoteStamp = raw.sort().pop() || "";
   const stamps = [latest, currentBase].filter(Boolean).map((snap) => ({ at: snap.uploadedAt || "", file: snap.fileName || "" }))
     .sort((a, b) => String(b.at).localeCompare(String(a.at)));
   if (stamps.length && stamps[0].at) state.lastUpdate = stamps[0];
@@ -800,6 +804,8 @@ async function saveState() {
   } catch {
     localStorage.removeItem("painel-exoc-acompanhamento-v1");
   }
+  state.histVersion = (state.histVersion || 0) + 1;
+  if (sheetsConfig().url) return; // dados ficam no servidor; nao copia tudo para o navegador
   await dbSet("baseline", state.baseline);
   await dbSet("manualStatus", state.manualStatus);
   await dbSet("latestKeys", state.latestKeys ? Array.from(state.latestKeys) : null);
@@ -1033,6 +1039,7 @@ function snapshotDateFromRecords(records) {
 }
 
 function addSnapshot(fileName, records, type = "atualizacao") {
+  state.histVersion = (state.histVersion || 0) + 1;
   const dateKey = todayKey();
   state.lastUpdate = { at: new Date().toISOString(), file: fileName };
   const snapshot = {
@@ -1059,15 +1066,9 @@ function addSnapshot(fileName, records, type = "atualizacao") {
       responsabilidade: record.responsabilidade,
       visitadoEm: record.visitadoEm,
       visitadoEmMs: record.visitadoEmMs,
-      dataSolicitacao: record.dataSolicitacao,
-      dataSolicitacaoMs: record.dataSolicitacaoMs,
       descricaoEncerramento: record.descricaoEncerramento,
       tipoEncerramento: record.tipoEncerramento,
       situacao: record.situacao,
-      zona: record.zona,
-      comunidade: record.comunidade,
-      comunidadeExecutada: record.comunidadeExecutada,
-      executor: record.executor,
     })),
   };
   state.history = fixedDailyHistory(state.history);
@@ -1108,7 +1109,15 @@ function hourLabel(iso) {
 // - dentro da meta = nao aparece mais na base fixa do dia seguinte
 // - fora da meta  = continua na base fixa do dia seguinte (nao tratada de um dia p/ o outro)
 // - o ultimo dia fica "em andamento" ate chegar a proxima base fixa
+let monthlyCache = { key: "", value: null };
 function calculateMonthly() {
+  const cacheKey = [state.histVersion || 0, state.history.length, JSON.stringify([state.filters.diretoria, state.filters.micro, state.filters.grupoServico]), state.latestSnap ? state.latestSnap.uploadedAt : "", state.selectedMonth].join("#");
+  if (monthlyCache.key === cacheKey && monthlyCache.value) return monthlyCache.value;
+  monthlyCache = { key: cacheKey, value: calculateMonthlyNow() };
+  return monthlyCache.value;
+}
+
+function calculateMonthlyNow() {
   const hist = fixedDailyHistory(state.history);
   const fDir = normalizeFilterValues(state.filters.diretoria), fMic = normalizeFilterValues(state.filters.micro);
   const seenBefore = new Set();
@@ -1563,6 +1572,8 @@ async function refreshFromSheets() {
   refreshing = true;
   try {
     const before = state.lastUpdate && state.lastUpdate.at;
+    const stamp = await callSheets({ action: "stamp" });
+    if (stamp && stamp.ok && typeof stamp.stamp === "string" && stamp.stamp === state.remoteStamp) return;
     if (await loadSheetsHistory()) {
       if (state.lastUpdate && state.lastUpdate.at !== before) {
         render();
@@ -1702,9 +1713,11 @@ els.clearData.addEventListener("click", async () => {
   render();
 });
 
+let searchTimer = null;
 els.search.addEventListener("input", (event) => {
   state.filters.search = event.target.value;
-  render();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(render, 300);
 });
 
 const filterControls = [
