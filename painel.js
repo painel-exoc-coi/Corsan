@@ -224,6 +224,11 @@ async function callSheets(body) {
 let sheetsQueue = Promise.resolve();
 function syncSnapshotToSheets(snapshot) {
   sheetsQueue = sheetsQueue.then(async () => {
+    const body = JSON.stringify(snapshot);
+    if (body.length > 7500000) {
+      setNotice(`A base NÃO foi salva: ficou com ${number((snapshot.records || []).length || (snapshot.keys || []).length)} EXOCs depois do tratamento (${(body.length / 1e6).toFixed(1)} MB), muito acima do normal. Confira se o arquivo é a extração certa e veja o quadro de reconciliação.`, "error");
+      return;
+    }
     const result = await callSheets({ action: "save", snapshot });
     if (result.skipped) return;
     if (!result.ok) {
@@ -1067,7 +1072,8 @@ function addSnapshot(fileName, records, type = "atualizacao") {
     dateKey,
     uploadedAt: new Date().toISOString(),
     keys: records.map((record) => record.key),
-    records: slimRecords(records),
+    // atualizações só precisam das chaves (o que ainda está na base); a base fixa guarda os registros
+    records: type === "base_inicial" ? slimRecords(records) : [],
   };
   state.history = fixedDailyHistory(state.history);
   const existingSameDay = state.history.find((item) => item.dateKey === dateKey);
