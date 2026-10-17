@@ -146,8 +146,6 @@ function sheetsConfig() {
 // (ex.: "Executado"). Limpa usando a data da PROPRIA base, entao o numero e sempre o mesmo.
 function sanitizeStoredRecords(records, dateKey) {
   return (records || []).filter((r) => {
-    const temSituacao = [r.situacao, r.tipoEncerramento, r.descricaoEncerramento].some((v) => normalize(v));
-    if (temSituacao && !encerradaComOcorrencia(r)) return false;
     if (r.visitadoEmMs) {
       if (new Date(r.visitadoEmMs).getFullYear() <= 2025) return false;
       if (dateKey && dateKeyFromMs(r.visitadoEmMs) >= dateKey) return false;
@@ -400,19 +398,11 @@ function cleanRows(rows) {
     })
     .filter((record) => record.solicitacao || record.ligacao || record.servico);
 
-  const map = new Map();
+  // Não remove duplicadas: a volumetria conta linha a linha, igual ao tratamento no Excel.
+  const seen = new Set();
   let duplicates = 0;
-  cleaned.forEach((record) => {
-    if (!map.has(record.key)) {
-      map.set(record.key, record);
-      return;
-    }
-    duplicates += 1;
-    const current = map.get(record.key);
-    if ((record.referenceMs || 0) > (current.referenceMs || 0)) map.set(record.key, record);
-  });
-
-  return { rows: Array.from(map.values()), duplicates, discarded: rows.length - cleaned.length };
+  cleaned.forEach((record) => { if (seen.has(record.key)) duplicates += 1; else seen.add(record.key); });
+  return { rows: cleaned, duplicates, discarded: rows.length - cleaned.length };
 }
 
 function dayFromFileName(fileName) {
@@ -430,6 +420,10 @@ function serviceCode(value) {
 
 // Fica so "encerrado com ocorrencia / nao executado". Sai tudo que foi executado (ex.: "0-Executado").
 function encerradaComOcorrencia(record) {
+  // Situação diz que foi encerrada com ocorrência / não executada: conta, mesmo que a
+  // descrição da ocorrência fale em "executado" (ex.: "124 - Serviço já executado").
+  const sit = normKey(record.situacao);
+  if (sit.includes("OCORRENCIA") || sit.includes("NAO EXECUTAD")) return true;
   const campos = [record.situacao, record.tipoEncerramento, record.descricaoEncerramento].map(normKey);
   const texto = campos.join(" | ");
   const naoExecutado = texto.includes("NAO EXECUTAD") || texto.includes("OCORRENCIA");
@@ -463,11 +457,13 @@ function applyBusinessRules(rows, referenceDay) {
     });
   const f = { semData: 0, outroAno: 0, hoje: 0, semCoi: 0, semTabela: 0, naoEncerrada: 0, semSituacao: !hasSituacao, diaBase: currentDay };
   const out = enrichedRows.filter((record) => {
-    if (!encerradaComOcorrencia(record)) { f.naoEncerrada += 1; return false; }
+    // Tratamento oficial (só 2 regras):
+    // 1) "Visitado em": sai 2025 (ou antes) e o dia da base em diante
+    // 2) só responsabilidade COI pela tabela auxiliar (código do serviço)
     const date = record.visitadoEmMs ? new Date(record.visitadoEmMs) : null;
-    if (!date) { f.semData += 1; return false; }
-    if (date.getFullYear() <= 2025) { f.outroAno += 1; return false; }
-    if (dateKeyFromMs(record.visitadoEmMs) >= currentDay) { f.hoje += 1; return false; }
+    if (!date) f.semData += 1; // sem data em "Visitado em": fica (não é filtrada)
+    else if (date.getFullYear() <= 2025) { f.outroAno += 1; return false; }
+    else if (dateKeyFromMs(record.visitadoEmMs) >= currentDay) { f.hoje += 1; return false; }
     if (record._semTabela) { f.semTabela += 1; return false; }
     if (normKey(record.procxCoi) !== "COI") { f.semCoi += 1; return false; }
     return true;
@@ -953,17 +949,15 @@ function renderSummary(records) {
     const f = state.funnel;
     box.hidden = !f;
     if (f) {
-      box.innerHTML = `<strong>Reconciliação da volumetria</strong> (última base inicial enviada): ${number(f.brutas)} linhas na planilha`
-        + ` − ${number(f.semChave)} sem nº solicitação/ligação/serviço`
-        + ` − ${number(f.duplicadas)} duplicadas (mesma solicitação + ligação + código do serviço)`
-        + ` − ${number(f.naoEncerrada || 0)} não encerradas com ocorrência`
-        + ` − ${number(f.semData)} sem data válida em "Visitado em"`
-        + ` − ${number(f.outroAno)} visitadas até 2025`
-        + ` − ${number(f.hoje)} visitadas no dia da base${f.diaBase ? ` (${f.diaBase.slice(8)}/${f.diaBase.slice(5, 7)})` : ""}`
+      box.innerHTML = `<strong>Reconciliação da volumetria</strong> (base fixa de ${f.diaBase ? shortDay(f.diaBase) : "hoje"}): ${number(f.brutas)} linhas na planilha`
+        + ` − ${number(f.semChave)} linhas vazias (sem solicitação, ligação e serviço)`
+        + ` − ${number(f.outroAno)} visitadas em 2025`
+        + ` − ${number(f.hoje)} visitadas no dia da base${f.diaBase ? ` (${f.diaBase.slice(8)}/${f.diaBase.slice(5, 7)})` : ""} ou depois`
         + ` − ${number(f.semTabela || 0)} com código fora da tabela auxiliar`
         + ` − ${number(f.semCoi)} de outra responsabilidade (não COI)`
-        + ` = <strong>${number(f.final)}</strong> para tratar`
-        + (f.semSituacao ? `. Atenção: a base não tem a coluna "Situação", então o filtro de encerradas com ocorrência não foi aplicado` : "") + ".";
+        + ` = <strong>${number(f.final)}</strong> para tratar.`
+        + (f.semData ? ` Obs.: ${number(f.semData)} sem data em "Visitado em" foram mantidas.` : "")
+        + (f.duplicadas ? ` Obs.: ${number(f.duplicadas)} linha(s) repetida(s) (mesma solicitação + ligação + código) foram mantidas.` : "");
     }
   }
 }
@@ -1790,6 +1784,7 @@ async function savePastBase(event) {
     const cleaned = cleanRows(raw);
     const rows = applyBusinessRules(cleaned.rows, day);
     const records = slimRecords(rows);
+    state.funnel = Object.assign({ brutas: raw.length, semChave: cleaned.discarded, duplicadas: cleaned.duplicates }, rows.funnel, { final: rows.length });
     const snapshot = {
       id: `${day}-base_inicial`, fileName: file.name, type: "base_inicial", dateKey: day,
       uploadedAt: new Date().toISOString(),
@@ -1805,7 +1800,7 @@ async function savePastBase(event) {
     }
     render();
     await syncSnapshotToSheets(snapshot);
-    setNotice(`Base fixa de ${shortDay(day)} salva com ${number(records.length)} EXOCs tratadas (de ${number(raw.length)} linhas). A aba Mensal 24h já recalculou esse dia e o anterior.`, "ok");
+    setNotice(`Base fixa de ${shortDay(day)} salva com ${number(records.length)} EXOCs tratadas (de ${number(raw.length)} linhas). Veja logo abaixo para onde foi cada linha. A aba Mensal 24h já recalculou esse dia e o anterior.`, "ok");
   } catch (error) {
     setNotice(error.message || "Não foi possível ler a base.", "error");
   }
