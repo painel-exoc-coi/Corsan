@@ -219,6 +219,13 @@
               </label>
               <span class="past-hint">Use para dias anteriores: escolha a data e suba a base extraída pela manhã daquele dia. Substitui a base fixa salva nesse dia.</span>
             </div>
+            <div class="month-toolbar past-base">
+              <label class="button" id="monthImportLabel">
+                <input id="monthImportFile" type="file" accept=".xlsx,.xls,.xlsb" />
+                Importar mês inteiro (base já tratada)
+              </label>
+              <span class="past-hint">Um arquivo só com o mês todo: cada dia da coluna <strong>data</strong> vira a base fixa daquele dia e o resultado vem da coluna <strong>Meta</strong> (dentro/fora do prazo). Substitui os dias que já existirem.</span>
+            </div>
             <div class="monthly-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
               <article><span>Volumetria do mês (bases fixas)</span><strong id="monthEligible">0</strong></article>
               <article><span>Tratadas dentro da meta</span><strong id="monthTreated">0</strong></article>
@@ -318,6 +325,6 @@
     <script src="config.js?v=20261017b"></script>
     <script src="auxiliares.js?v=20261017b"></script>
     <script src="grupos-servico.js?v=20261017b"></script>
-    <script src="painel.js?v=20261017b"></script>
+    <script src="painel.js?v=20261029a"></script>
   </body>
 </html>

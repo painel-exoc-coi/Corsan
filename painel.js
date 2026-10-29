@@ -146,6 +146,7 @@ function sheetsConfig() {
 // (ex.: "Executado"). Limpa usando a data da PROPRIA base, entao o numero e sempre o mesmo.
 function sanitizeStoredRecords(records, dateKey) {
   return (records || []).filter((r) => {
+    if (r.meta) return true; // mes importado ja tratado: nao refiltra
     if (r.visitadoEmMs) {
       if (new Date(r.visitadoEmMs).getFullYear() <= 2025) return false;
       if (dateKey && dateKeyFromMs(r.visitadoEmMs) >= dateKey) return false;
@@ -1167,6 +1168,7 @@ function calculateMonthlyNow() {
       } else {
         it.situacao = nextKeys.has(record.key) ? "Fora da meta" : "Tratada na meta";
       }
+      if (record.meta) it.situacao = record.meta === "FORA" ? "Fora da meta" : "Tratada na meta"; // mes importado: vale a coluna Meta
       if (!fDir.includes("todos") && !fDir.includes(it.diretoria)) return;
       if (!fMic.includes("todos") && !fMic.includes(it.micro)) return;
       if (!filterMatches("grupoServico", it.grupoServico || "Sem grupo")) return;
@@ -1860,6 +1862,88 @@ async function savePastBase(event) {
   }
 }
 on(document.getElementById("pastBaseFile"), "change", savePastBase);
+
+// ===== Importar um mes inteiro (base ja tratada no Excel) =====
+// Cada dia da coluna "data" vira a base fixa daquele dia; o resultado 24h vem da coluna "Meta".
+async function importMonthFile(event) {
+  const file = event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  try {
+    setNotice(`Lendo ${file.name}...`);
+    const raw = await sheetRows(await file.arrayBuffer(), file.name);
+    if (!raw.length) throw new Error("O arquivo está vazio.");
+    const headers = Object.keys(raw[0]);
+    const exact = (...names) => headers.find((h) => names.some((n) => normKey(h) === normKey(n)));
+    const colDia = exact("data");
+    const colMeta = exact("Meta");
+    if (!colDia || !colMeta) throw new Error('O arquivo precisa ter as colunas "data" e "Meta".');
+    const colVis = exact("Visitado em", "Visitado");
+    const id = (v) => normalize(v).replace(/\.0+$/, "");
+    const byDay = new Map();
+    let ignoradas = 0;
+    raw.forEach((row) => {
+      const dia = parseExcelDate(row[colDia]);
+      const solicitacao = id(pick(row, ["Nº Solicitação", "No Solicitação", "Numero Solicitação"]));
+      const ligacao = id(pick(row, ["Nº Ligação", "No Ligação", "Numero Ligação"]));
+      const codigoServico = id(pick(row, ["Código do Serviço", "Codigo do Serviço"]));
+      if (!dia.ms || !(solicitacao || ligacao)) { ignoradas += 1; return; }
+      const vis = colVis ? parseExcelDate(row[colVis]) : { display: "", ms: null };
+      const visDate = vis.ms ? new Date(vis.ms) : null;
+      const visMs = visDate ? new Date(visDate.getFullYear(), visDate.getMonth(), visDate.getDate()).getTime() : null;
+      const visTxt = visDate ? dayLabel(visMs) + "/" + visDate.getFullYear() : "";
+      const tipo = normalize(pick(row, ["Tipo Encerramento", "Tipo Encerramento "]));
+      const record = {
+        key: [solicitacao, ligacao, codigoServico].join("|"),
+        referenceMs: visMs, referenceDate: visTxt,
+        localidade: normalize(pick(row, ["Localidade"])),
+        diretoria: normalize(pick(row, ["Diretoria"])),
+        micro: normalize(pick(row, ["Micro"])),
+        solicitacao, ligacao, codigoServico,
+        servico: normalize(pick(row, ["Tipo de Solicitação"])),
+        grupoServico: serviceGroupFor(codigoServico),
+        procxCoi: "COI", responsavel: "COI", responsabilidade: "COI",
+        visitadoEm: visTxt, visitadoEmMs: visMs,
+        descricaoEncerramento: normalize(pick(row, ["Descrição Tipo Encerramento", "Descricao Tipo Encerramento"])) || tipo,
+        tipoEncerramento: tipo,
+        situacao: normalize(pick(row, ["Situação", "Situacao"])),
+        meta: normKey(row[colMeta]).startsWith("FORA") ? "FORA" : "DENTRO",
+      };
+      const key = dateKeyFromMs(dia.ms);
+      if (!byDay.has(key)) byDay.set(key, []);
+      byDay.get(key).push(record);
+    });
+    const days = Array.from(byDay.keys()).sort();
+    if (!days.length) throw new Error('Nenhuma linha com data válida na coluna "data".');
+    if (days[days.length - 1] >= todayKey()) throw new Error("O arquivo tem dia de hoje ou futuro. Use só para meses/dias já fechados.");
+    const total = days.reduce((a, d) => a + byDay.get(d).length, 0);
+    if (!confirm(`Importar ${days.length} dias (${shortDay(days[0])} a ${shortDay(days[days.length - 1])}), ${number(total)} EXOCs? Os dias que já existirem serão substituídos.`)) return;
+    const agora = new Date().toISOString();
+    const snaps = days.map((day) => {
+      const records = byDay.get(day);
+      return {
+        id: `${day}-base_inicial`, fileName: `${file.name} (${shortDay(day)})`, type: "base_inicial", dateKey: day,
+        uploadedAt: agora,
+        baseAt: new Date(`${day}T00:00:00`).toISOString(), // sem hora na base: vencida = visitada 2+ dias antes
+        keys: records.map((r) => r.key), records,
+      };
+    });
+    state.history = fixedDailyHistory(state.history).filter((h) => !byDay.has(h.dateKey)).concat(snaps)
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    state.histVersion = (state.histVersion || 0) + 1;
+    state.selectedMonth = days[0].slice(0, 7);
+    render();
+    for (let i = 0; i < snaps.length; i += 1) {
+      setNotice(`Salvando ${shortDay(snaps[i].dateKey)} (${i + 1} de ${snaps.length})... não feche a página.`);
+      const result = await callSheets({ action: "save", snapshot: snaps[i] });
+      if (!result.skipped && !result.ok) throw new Error(`Parou no dia ${shortDay(snaps[i].dateKey)}: ${result.error || "erro desconhecido"}. Rode de novo o mesmo arquivo.`);
+    }
+    setNotice(`Mês importado ✓ ${days.length} dias, ${number(total)} EXOCs${ignoradas ? ` (${ignoradas} linhas sem data/número ignoradas)` : ""}. Quem abrir o link já vê.`, "ok");
+  } catch (error) {
+    setNotice(error.message || "Não foi possível importar o mês.", "error");
+  }
+}
+on(document.getElementById("monthImportFile"), "change", importMonthFile);
 
 on(document.getElementById("monthSelect"), "change", (event) => { state.selectedMonth = event.target.value; render(); });
 on(els.pivotRow1, "change", render);
