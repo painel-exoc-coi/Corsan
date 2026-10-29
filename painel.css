@@ -1867,3 +1867,105 @@ body[data-view="charts"] #pivotTable .total-row td:first-child {
   font-size: 0.82rem;
   line-height: 1.35;
 }
+
+/* ===== Tratativa por Diretoria ===== */
+.dir-section {
+  grid-column: 1 / -1;
+}
+
+.dir-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-bottom: 10px;
+}
+
+.dir-head h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--ink);
+}
+
+.dir-sub {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.dir-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.dir-card {
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff, #f4fbff);
+  box-shadow: var(--shadow);
+}
+
+.dir-card.alerta {
+  border-color: #f3b4ae;
+  background: linear-gradient(180deg, #ffffff, #fff5f4);
+}
+
+.dir-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dir-nome {
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.dir-alerta {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--danger);
+  text-transform: none;
+}
+
+.dir-pct {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.dir-detalhe {
+  margin: 6px 0 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.dir-detalhe .venc {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.dir-track {
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--soft);
+  overflow: hidden;
+}
+
+.dir-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ok);
+  transition: width 0.4s ease;
+}
+
+.dir-card.alerta .dir-fill {
+  background: var(--danger);
+}

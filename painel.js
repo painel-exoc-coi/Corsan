@@ -1393,12 +1393,64 @@ function renderSla(records) {
   els.slaBody.appendChild(fragment);
 }
 
+// ===== Tratativa por Diretoria (parcial sobre a base fixa do dia) =====
+const DIR_ALERTA_PCT = 35; // abaixo disso a diretoria ganha o alerta vermelho
+const DIR_MEDALHAS = ["🥇", "🥈", "🥉"];
+
+function pctBr(value) {
+  return value.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+}
+
+function renderDiretorias() {
+  const grid = document.getElementById("dirGrid");
+  if (!grid) return;
+  const porDir = new Map();
+  state.records.forEach((r) => {
+    const nome = r.diretoria || "Não localizado";
+    const d = porDir.get(nome) || { nome, total: 0, tratadas: 0, vencidas: 0 };
+    d.total += 1;
+    if (r.status === "tratado") d.tratadas += 1;
+    else if (r.deadline && r.deadline.className === "danger") d.vencidas += 1;
+    porDir.set(nome, d);
+  });
+  const lista = Array.from(porDir.values())
+    .map((d) => Object.assign(d, { pct: d.total ? (d.tratadas / d.total) * 100 : 0 }))
+    .sort((a, b) => b.pct - a.pct || b.total - a.total);
+
+  const sub = document.getElementById("dirSub");
+  if (sub) sub.textContent = lista.length
+    ? `Parcial sobre a base fixa${state.baselineDay ? " de " + shortDay(state.baselineDay) : " do dia"} · muda a cada nova base enviada`
+    : "";
+
+  if (!lista.length) {
+    grid.innerHTML = `<div class="dir-card"><span class="dir-detalhe">Sem base do dia carregada ainda.</span></div>`;
+    return;
+  }
+
+  grid.innerHTML = lista.map((d, i) => {
+    const alerta = d.pct < DIR_ALERTA_PCT;
+    const abertas = d.total - d.tratadas;
+    return `
+      <article class="dir-card${alerta ? " alerta" : ""}">
+        <div class="dir-top">
+          <span class="dir-nome">${esc(d.nome)} ${DIR_MEDALHAS[i] || ""}${alerta ? `<span class="dir-alerta">🚨 Abaixo de ${DIR_ALERTA_PCT}%</span>` : ""}</span>
+          <span class="dir-pct">${pctBr(d.pct)}</span>
+        </div>
+        <div class="dir-detalhe">
+          ${number(d.total)} EXOCs · ${number(d.tratadas)} tratadas ✅ · ${number(abertas)} não tratadas ⏳${d.vencidas ? ` · <span class="venc">${number(d.vencidas)} vencidas</span>` : ""}
+        </div>
+        <span class="dir-track"><span class="dir-fill" style="width:${d.pct.toFixed(1)}%"></span></span>
+      </article>`;
+  }).join("");
+}
+
 function render() {
   renderLastUpdate();
   decorateRecords();
   updateFilterOptions();
   const records = filteredRecords();
   renderSummary(records);
+  renderDiretorias();
   renderTable(records);
   renderCharts(records);
   renderSla(records);
