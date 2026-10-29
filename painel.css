@@ -1894,8 +1894,9 @@ body[data-view="charts"] #pivotTable .total-row td:first-child {
 
 .dir-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  max-width: 560px;
 }
 
 .dir-card {
