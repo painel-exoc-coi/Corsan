@@ -1417,10 +1417,6 @@ function renderDiretorias() {
     .map((d) => Object.assign(d, { pct: d.total ? (d.tratadas / d.total) * 100 : 0 }))
     .sort((a, b) => b.pct - a.pct || b.total - a.total);
 
-  const sub = document.getElementById("dirSub");
-  if (sub) sub.textContent = lista.length
-    ? `Parcial sobre a base fixa${state.baselineDay ? " de " + shortDay(state.baselineDay) : " do dia"} · muda a cada nova base enviada`
-    : "";
 
   if (!lista.length) {
     grid.innerHTML = `<div class="dir-card"><span class="dir-detalhe">Sem base do dia carregada ainda.</span></div>`;
