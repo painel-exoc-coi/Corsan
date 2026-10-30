@@ -1168,7 +1168,6 @@ function calculateMonthlyNow() {
       } else {
         it.situacao = nextKeys.has(record.key) ? "Fora da meta" : "Tratada na meta";
       }
-      if (record.meta) it.situacao = record.meta === "FORA" ? "Fora da meta" : "Tratada na meta"; // mes importado: vale a coluna Meta
       if (!fDir.includes("todos") && !fDir.includes(it.diretoria)) return;
       if (!fMic.includes("todos") && !fMic.includes(it.micro)) return;
       if (!filterMatches("grupoServico", it.grupoServico || "Sem grupo")) return;
@@ -1879,9 +1878,11 @@ async function importMonthFile(event) {
     const colMeta = exact("Meta");
     if (!colDia || !colMeta) throw new Error('O arquivo precisa ter as colunas "data" e "Meta".');
     const colVis = exact("Visitado em", "Visitado");
+    const colDias = exact("indice duplicidade");
     const id = (v) => normalize(v).replace(/\.0+$/, "");
     const byDay = new Map();
     let ignoradas = 0;
+    const lidas = [];
     raw.forEach((row) => {
       const dia = parseExcelDate(row[colDia]);
       const solicitacao = id(pick(row, ["Nº Solicitação", "No Solicitação", "Numero Solicitação"]));
@@ -1909,14 +1910,20 @@ async function importMonthFile(event) {
         situacao: normalize(pick(row, ["Situação", "Situacao"])),
         meta: normKey(row[colMeta]).startsWith("FORA") ? "FORA" : "DENTRO",
       };
-      const key = dateKeyFromMs(dia.ms);
-      if (!byDay.has(key)) byDay.set(key, []);
-      byDay.get(key).push(record);
+      // fora do prazo continua na fixa dos dias seguintes (vinda): fica "indice duplicidade" dias, no minimo 2
+      const dias = record.meta === "FORA" ? Math.max(2, parseInt(colDias ? row[colDias] : 2, 10) || 2) : 1;
+      lidas.push({ day: dateKeyFromMs(dia.ms), dias, record });
     });
-    const days = Array.from(byDay.keys()).sort();
+    const days = Array.from(new Set(lidas.map((x) => x.day))).sort();
+    const pos = new Map(days.map((d, i) => [d, i]));
+    days.forEach((d) => byDay.set(d, []));
+    lidas.forEach((x) => {
+      const i = pos.get(x.day);
+      for (let j = i; j < Math.min(i + x.dias, days.length); j += 1) byDay.get(days[j]).push(x.record);
+    });
     if (!days.length) throw new Error('Nenhuma linha com data válida na coluna "data".');
     if (days[days.length - 1] >= todayKey()) throw new Error("O arquivo tem dia de hoje ou futuro. Use só para meses/dias já fechados.");
-    const total = days.reduce((a, d) => a + byDay.get(d).length, 0);
+    const total = lidas.length;
     if (!confirm(`Importar ${days.length} dias (${shortDay(days[0])} a ${shortDay(days[days.length - 1])}), ${number(total)} EXOCs? Os dias que já existirem serão substituídos.`)) return;
     const agora = new Date().toISOString();
     const snaps = days.map((day) => {
