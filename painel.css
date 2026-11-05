@@ -1983,3 +1983,7 @@ body[data-view="charts"] #pivotTable .total-row td:first-child {
 .operador-box label { font-size: 13px; font-weight: 600; }
 .operador-box input { padding: 10px 12px; border: 1px solid #c9d2e3; border-radius: 8px; font-size: 15px; }
 .operador-acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.operador-chip { position: fixed; right: 16px; bottom: 16px; z-index: 9000; background: #fff; border: 1px solid #c9d2e3; border-radius: 999px; padding: 6px 8px 6px 14px; font-size: 12px; color: #1d2b3a; box-shadow: 0 4px 14px rgba(0,0,0,.12); display: flex; align-items: center; gap: 8px; }
+.operador-chip[hidden] { display: none; }
+.operador-chip button { border: 0; background: #e6edff; color: #0a33c2; border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.operador-acoes button[hidden] { display: none; }
