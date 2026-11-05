@@ -1970,3 +1970,16 @@ body[data-view="charts"] #pivotTable .total-row td:first-child {
 .dir-card.alerta .dir-fill {
   background: var(--danger);
 }
+
+/* ===== "Vou tratar" ===== */
+.claim-btn { padding: 6px 12px; font-size: 12px; white-space: nowrap; }
+.claim-tag { display: inline-block; font-size: 12px; line-height: 1.3; padding: 4px 8px; border-radius: 8px; background: #e6edff; color: #0a2a8f; white-space: nowrap; }
+.claim-tag.done { background: #e3f5ea; color: #13612f; }
+.operador-modal { position: fixed; inset: 0; background: rgba(10, 20, 40, .5); display: flex; align-items: center; justify-content: center; z-index: 9999; padding: 16px; }
+.operador-modal[hidden] { display: none; }
+.operador-box { background: #fff; border-radius: 14px; padding: 24px; width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+.operador-box h3 { margin: 0; color: #0a33c2; }
+.operador-box p { margin: 0; font-size: 13px; color: #4b5d63; }
+.operador-box label { font-size: 13px; font-weight: 600; }
+.operador-box input { padding: 10px 12px; border: 1px solid #c9d2e3; border-radius: 8px; font-size: 15px; }
+.operador-acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
