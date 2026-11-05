@@ -1977,6 +1977,38 @@ try {
 
 // ===== "Vou tratar": quem pegou cada EXOC no dia =====
 const OPERADOR_KEY = "painel-exoc-operador";
+const MAQUINA_KEY = "painel-exoc-maquina";
+
+// identidade fixa deste computador/navegador (criada uma vez, nao muda)
+function maquinaId() {
+  try {
+    let id = localStorage.getItem(MAQUINA_KEY);
+    if (!id) {
+      id = "PC-" + Math.random().toString(36).slice(2, 6).toUpperCase() + Date.now().toString(36).slice(-3).toUpperCase();
+      localStorage.setItem(MAQUINA_KEY, id);
+    }
+    return id;
+  } catch { return "PC-SEM-ID"; }
+}
+
+function ultimoOperador() {
+  try { return (JSON.parse(localStorage.getItem(OPERADOR_KEY) || "null") || {}).nome || ""; } catch { return ""; }
+}
+
+function mostrarOperador() {
+  let chip = document.getElementById("operadorChip");
+  if (!chip) {
+    chip = document.createElement("div");
+    chip.id = "operadorChip";
+    chip.className = "operador-chip";
+    document.body.appendChild(chip);
+  }
+  const nome = operadorDoDia();
+  chip.hidden = !nome;
+  chip.innerHTML = nome ? `Operador: <strong>${esc(nome)}</strong> <button type="button" id="operadorTrocar">Trocar</button>` : "";
+  const trocar = document.getElementById("operadorTrocar");
+  if (trocar) trocar.addEventListener("click", () => abrirOperador(null, true, "Troca de operador"));
+}
 
 function operadorDoDia() {
   try {
@@ -1999,15 +2031,33 @@ function claimCell(record) {
 }
 
 let _claimPendente = null;
+let _tipoAcesso = "Abertura";
+function abrirOperador(cb, podeCancelar, tipo) {
+  _claimPendente = cb;
+  _tipoAcesso = tipo || "Abertura";
+  const modal = document.getElementById("operadorModal");
+  const input = document.getElementById("operadorNome");
+  input.value = ultimoOperador(); // sugere o de ontem: se for a mesma pessoa, e so confirmar
+  document.getElementById("operadorCancelar").hidden = !podeCancelar;
+  modal.hidden = false;
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+}
+
 function pedirOperador(cb) {
   const nome = operadorDoDia();
   if (nome) { cb(nome); return; }
-  _claimPendente = cb;
-  const modal = document.getElementById("operadorModal");
-  const input = document.getElementById("operadorNome");
-  input.value = "";
-  modal.hidden = false;
-  setTimeout(() => input.focus(), 50);
+  abrirOperador(cb, true, "Abertura");
+}
+
+function registrarAcesso(nome, tipo) {
+  callSheets({ action: "access", access: { nome, maquina: maquinaId(), tipo: tipo || "Abertura" } });
+}
+
+// ao abrir o painel: 1a vez no dia neste PC pergunta quem e; depois so registra o acesso
+function iniciarOperador() {
+  const nome = operadorDoDia();
+  if (nome) { registrarAcesso(nome, "Abertura"); mostrarOperador(); return; }
+  abrirOperador(null, false, "Abertura");
 }
 
 function confirmarOperador(event) {
@@ -2017,6 +2067,8 @@ function confirmarOperador(event) {
   if (nome.length < 3) { input.focus(); return; }
   try { localStorage.setItem(OPERADOR_KEY, JSON.stringify({ nome, dia: todayKey() })); } catch {}
   document.getElementById("operadorModal").hidden = true;
+  registrarAcesso(nome, _tipoAcesso);
+  mostrarOperador();
   const cb = _claimPendente; _claimPendente = null;
   if (cb) cb(nome);
 }
@@ -2034,7 +2086,7 @@ async function vouTratar(button) {
     button.textContent = "Salvando...";
     const result = await callSheets({
       action: "claim",
-      claim: { key, nome, solicitacao: record.solicitacao || "", ligacao: record.ligacao || "", servico: record.servico || "" },
+      claim: { key, nome, maquina: maquinaId(), solicitacao: record.solicitacao || "", ligacao: record.ligacao || "", servico: record.servico || "" },
     });
     if (result && result.ok) {
       state.claims = result.claims || Object.assign({}, state.claims, { [key]: result.claim });
@@ -2056,3 +2108,4 @@ els.body.addEventListener("click", (event) => {
 });
 document.getElementById("operadorForm").addEventListener("submit", confirmarOperador);
 document.getElementById("operadorCancelar").addEventListener("click", fecharOperador);
+iniciarOperador();
