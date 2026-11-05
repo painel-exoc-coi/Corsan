@@ -27,6 +27,7 @@ const state = {
   latestFileName: "",
   baselineFileName: "",
   manualStatus: {},
+  claims: {},
   baselineDay: "",
   latestSnap: null,
   selectedMonth: "",
@@ -185,6 +186,7 @@ function applyDatabasePayload(payload) {
     state.baselineFileName = currentBase.fileName || `Base de ${currentBase.dateKey}`;
     state.baselineDay = currentBase.dateKey || "";
   }
+  if (payload && payload.claims && typeof payload.claims === "object") state.claims = payload.claims;
   state.latestSnap = latest && latest.keys ? { dateKey: latest.dateKey, type: latest.type, uploadedAt: latest.uploadedAt, fileName: latest.fileName, keys: latest.keys } : null;
   if (latest && latest.keys && latest.type !== "base_inicial" && state.baselineDay && normalizeHistoryDateKey(latest.dateKey) === state.baselineDay) {
     state.latestKeys = new Set(latest.keys || []);
@@ -969,6 +971,7 @@ function renderSummary(records) {
 }
 
 function renderTable(records) {
+  state.lastTableRecords = records;
   const visible = records.slice(0, 200);
   els.body.innerHTML = "";
   const fragment = document.createDocumentFragment();
@@ -989,13 +992,14 @@ function renderTable(records) {
       <td><span class="pill ${record.appearsLatest ? "open" : "ok"}">${
       record.appearsLatest ? "Permanece" : "Saiu"
     }</span></td>
+  <td>${claimCell(record)}</td>
     `;
     fragment.appendChild(tr);
   });
   els.body.appendChild(fragment);
   if (records.length > visible.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="12">Mostrando ${number(visible.length)} de ${number(
+    tr.innerHTML = `<td colspan="13">Mostrando ${number(visible.length)} de ${number(
       records.length
     )}. Use os filtros ou exporte o CSV para ver tudo.</td>`;
     els.body.appendChild(tr);
@@ -1969,3 +1973,86 @@ try {
   console.error(error);
   setNotice("Erro ao carregar o painel: " + (error && error.message ? error.message : error), "error");
 }
+
+
+// ===== "Vou tratar": quem pegou cada EXOC no dia =====
+const OPERADOR_KEY = "painel-exoc-operador";
+
+function operadorDoDia() {
+  try {
+    const s = JSON.parse(localStorage.getItem(OPERADOR_KEY) || "null");
+    if (s && s.dia === todayKey() && s.nome) return s.nome;
+  } catch {}
+  return "";
+}
+
+function claimCell(record) {
+  const c = state.claims && state.claims[record.key];
+  if (c) {
+    return record.appearsLatest
+      ? `<span class="claim-tag">Em tratamento por <strong>${esc(c.nome)}</strong>, ${esc(c.hora)}</span>`
+      : `<span class="claim-tag done">Tratada por <strong>${esc(c.nome)}</strong></span>`;
+  }
+  if (!record.appearsLatest) return "—";
+  if (state.baselineDay && state.baselineDay !== todayKey()) return "—";
+  return `<button type="button" class="button claim-btn" data-claim="${esc(record.key)}">Vou tratar</button>`;
+}
+
+let _claimPendente = null;
+function pedirOperador(cb) {
+  const nome = operadorDoDia();
+  if (nome) { cb(nome); return; }
+  _claimPendente = cb;
+  const modal = document.getElementById("operadorModal");
+  const input = document.getElementById("operadorNome");
+  input.value = "";
+  modal.hidden = false;
+  setTimeout(() => input.focus(), 50);
+}
+
+function confirmarOperador(event) {
+  if (event) event.preventDefault();
+  const input = document.getElementById("operadorNome");
+  const nome = normalize(input.value).replace(/\s+/g, " ");
+  if (nome.length < 3) { input.focus(); return; }
+  try { localStorage.setItem(OPERADOR_KEY, JSON.stringify({ nome, dia: todayKey() })); } catch {}
+  document.getElementById("operadorModal").hidden = true;
+  const cb = _claimPendente; _claimPendente = null;
+  if (cb) cb(nome);
+}
+
+function fecharOperador() {
+  _claimPendente = null;
+  document.getElementById("operadorModal").hidden = true;
+}
+
+async function vouTratar(button) {
+  const key = button.getAttribute("data-claim");
+  const record = (state.records || state.baseline || []).find((r) => r.key === key) || {};
+  pedirOperador(async (nome) => {
+    button.disabled = true;
+    button.textContent = "Salvando...";
+    const result = await callSheets({
+      action: "claim",
+      claim: { key, nome, solicitacao: record.solicitacao || "", ligacao: record.ligacao || "", servico: record.servico || "" },
+    });
+    if (result && result.ok) {
+      state.claims = result.claims || Object.assign({}, state.claims, { [key]: result.claim });
+      if (result.already && result.claim && result.claim.nome !== nome) {
+        setNotice(`Essa EXOC já está com ${result.claim.nome} desde ${result.claim.hora}.`, "error");
+      }
+      renderTable(state.lastTableRecords || []);
+    } else {
+      button.disabled = false;
+      button.textContent = "Vou tratar";
+      setNotice("Não consegui registrar: " + ((result && result.error) || "erro desconhecido") + ". Tente de novo.", "error");
+    }
+  });
+}
+
+els.body.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-claim]");
+  if (button && !button.disabled) vouTratar(button);
+});
+document.getElementById("operadorForm").addEventListener("submit", confirmarOperador);
+document.getElementById("operadorCancelar").addEventListener("click", fecharOperador);
