@@ -6,7 +6,7 @@
     <title>Painel EXOC Corsan</title>
     <meta name="description" content="Painel para acompanhar EXOCs a partir de uma base inicial fixa e novas bases enviadas durante o dia." />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cpath d='M16 18h32v6H16zM16 29h23v6H16zM16 40h32v6H16z' fill='%23e2e8f0'/%3E%3Ccircle cx='48' cy='32' r='8' fill='%2322c55e'/%3E%3C/svg%3E" />
-       <link rel="stylesheet" href="painel.css?v=20261110b" />
+    <link rel="stylesheet" href="painel.css?v=20261110c" />
     <script>
       window.addEventListener("error", function (event) {
         var box = document.querySelector("#loadNotice");
@@ -152,11 +152,10 @@
               <p id="resultText">Aguardando carregamento da base inicial.</p>
             </div>
             <div class="segmented" role="group" aria-label="Visualização">
-              <button id="viewTable" type="button" class="active">Diário</button>
-              <button id="viewDia" type="button">Tratativa do dia</button>
+              <button id="viewTable" type="button" class="active">COI-Serviços</button>
+              <button id="viewRepav" type="button">Repavimentação</button>
               <button id="viewMonthly" type="button">Mensal 24h</button>
-              <button id="viewCharts" type="button">Dinâmica</button>
-              <button id="viewRepav" type="button">REPAV</button>
+              <button id="viewCharts" type="button">Visões</button>
             </div>
           </div>
 
@@ -265,11 +264,6 @@
               </table>
             </div>
           </div>
-          <div id="diaView" class="dia-view hidden">
-            <p class="notice dia-nota">Visão do dia sobre a <strong>base fixa da manhã</strong>. <strong>Novas</strong> = O.S. que apareceram pela 1ª vez (são as que contam na meta). <strong>Repetidas</strong> = já tinham aparecido antes (retorno de campo ou pendentes). Ranking: quem zera primeiro fica na frente e não perde a posição.</p>
-            <div id="diaGrid" class="dia-grid"></div>
-          </div>
-
           <div id="repavView" class="repav-view hidden">
             <p class="notice repav-nota">EXOCs de responsabilidade da <strong>REPAVIMENTAÇÃO</strong>. Mesmo tratamento das do COI (base fixa da manhã + atualizações), mas <strong>não entram na meta</strong>.</p>
             <p class="notice error" id="repavAviso" hidden>A última atualização foi enviada antes desta versão do painel, por isso ainda não dá para saber quais REPAV saíram. Na próxima base enviada isso já aparece.</p>
@@ -344,11 +338,12 @@
             <div class="table-wrap pivot-wrap">
               <table id="pivotTable"></table>
             </div>
-            <section class="dir-section" aria-label="Tratativa por diretoria">
+            <section class="dir-section dia-section" aria-label="Tratativa do dia">
               <div class="dir-head">
-                <h3>Tratativa por Diretoria 💧</h3>
+                <h3>Tratativa do dia — % do que entrou novo 💧</h3>
               </div>
-              <div id="dirGrid" class="dir-grid"></div>
+              <p class="notice dia-nota">Visão do dia sobre a <strong>base fixa da manhã</strong>. <strong>Novas</strong> = O.S. que apareceram pela 1ª vez (são as que contam na meta). <strong>Repetidas</strong> = já tinham aparecido antes (retorno de campo ou pendentes). Ranking: quem zera primeiro fica na frente e não perde a posição.</p>
+              <div id="diaGrid" class="dia-grid"></div>
             </section>
             <div>
               <h3>Ocorrências com maior volume</h3>
@@ -443,6 +438,6 @@
     <script src="config.js?v=20261017b"></script>
     <script src="auxiliares.js?v=20261017b"></script>
     <script src="grupos-servico.js?v=20261017b"></script>
-    <script src="painel.js?v=20261110a"></script>
+    <script src="painel.js?v=20261110c"></script>
   </body>
 </html>
