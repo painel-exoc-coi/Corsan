@@ -28,6 +28,12 @@ const state = {
   baselineFileName: "",
   manualStatus: {},
   claims: {},
+  repavBaseline: [],
+  repavLatestKeys: null,
+  repavRecords: [],
+  saidas: null,
+  sessao: "",
+  user: null,
   baselineDay: "",
   latestSnap: null,
   selectedMonth: "",
@@ -47,6 +53,7 @@ const state = {
     ocorrencia: ["todos"],
     servico: ["todos"],
     grupoServico: ["todos"],
+    entrada: ["todos"],
   },
 };
 
@@ -71,6 +78,7 @@ const els = {
   ocorrencia: document.querySelector("#ocorrenciaFilter"),
   servico: document.querySelector("#servicoFilter"),
   grupoServico: document.querySelector("#grupoServicoFilter"),
+  entrada: document.querySelector("#entradaFilter"),
   baselineDate: document.querySelector("#baselineDate"),
   latestDate: document.querySelector("#latestDate"),
   duplicateText: document.querySelector("#duplicateText"),
@@ -164,7 +172,22 @@ function sanitizeSnapshot(snap) {
   if (!snap || !Array.isArray(snap.records) || !snap.records.length) return snap;
   const dateKey = normalizeHistoryDateKey(snap.dateKey);
   const records = sanitizeStoredRecords(snap.records, dateKey);
-  return Object.assign({}, snap, { dateKey, records, keys: records.map((r) => r.key) });
+  const repav = Array.isArray(snap.repav) ? sanitizeRepavRecords(snap.repav, dateKey) : [];
+  return Object.assign({}, snap, { dateKey, records, keys: records.map((r) => r.key), repav });
+}
+
+// REPAV: mesma regra de data do "Visitado em" (fora 2025 e o dia da base em diante)
+function sanitizeRepavRecords(records, dateKey) {
+  return (records || []).filter((r) => {
+    if (!r.visitadoEmMs) return true;
+    if (new Date(r.visitadoEmMs).getFullYear() <= 2025) return false;
+    if (dateKey && dateKeyFromMs(r.visitadoEmMs) >= dateKey) return false;
+    return true;
+  });
+}
+
+function isRepav(resp) {
+  return normKey(resp).startsWith("REPAV");
 }
 
 function applyDatabasePayload(payload) {
@@ -176,7 +199,9 @@ function applyDatabasePayload(payload) {
   state.histVersion = (state.histVersion || 0) + 1;
   const raw = (payload && Array.isArray(payload.history) ? payload.history : []).map((x) => x.uploadedAt || "");
   if (payload && payload.latest) raw.push(payload.latest.uploadedAt || "");
-  state.remoteStamp = raw.sort().pop() || "";
+  state.remoteStamp = (payload && payload.stamp) || raw.sort().pop() || "";
+  if (payload && payload.me) aplicarUsuario(payload.me);
+  state.saidas = payload && payload.saidas && payload.saidas.idx ? payload.saidas : null;
   const stamps = [latest, currentBase].filter(Boolean).map((snap) => ({ at: snap.uploadedAt || "", file: snap.fileName || "" }))
     .sort((a, b) => String(b.at).localeCompare(String(a.at)));
   if (stamps.length && stamps[0].at) state.lastUpdate = stamps[0];
@@ -185,14 +210,17 @@ function applyDatabasePayload(payload) {
     state.baseline = currentBase.records;
     state.baselineFileName = currentBase.fileName || `Base de ${currentBase.dateKey}`;
     state.baselineDay = currentBase.dateKey || "";
+    state.repavBaseline = currentBase.repav || [];
   }
   if (payload && payload.claims && typeof payload.claims === "object") state.claims = payload.claims;
-  state.latestSnap = latest && latest.keys ? { dateKey: latest.dateKey, type: latest.type, uploadedAt: latest.uploadedAt, fileName: latest.fileName, keys: latest.keys } : null;
+  state.latestSnap = latest && latest.keys ? { dateKey: latest.dateKey, type: latest.type, uploadedAt: latest.uploadedAt, fileName: latest.fileName, keys: latest.keys, repavKeys: latest.repavKeys || null } : null;
   if (latest && latest.keys && latest.type !== "base_inicial" && state.baselineDay && normalizeHistoryDateKey(latest.dateKey) === state.baselineDay) {
     state.latestKeys = new Set(latest.keys || []);
+    state.repavLatestKeys = Array.isArray(latest.repavKeys) ? new Set(latest.repavKeys) : null;
     state.latestFileName = latest.fileName || `Atualização de ${latest.dateKey}`;
   } else {
     state.latestKeys = null;
+    state.repavLatestKeys = null;
     state.latestFileName = "";
   }
   return !!remote.length || !!latest;
@@ -207,13 +235,15 @@ async function callSheets(body) {
     const response = await fetch(config.url, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(Object.assign({ token: config.token }, body)),
+      body: JSON.stringify(Object.assign({ sessao: state.sessao || "" }, body)),
       signal: controller.signal,
       credentials: "omit",
     });
     const text = await response.text();
     try {
-      return JSON.parse(text);
+      const data = JSON.parse(text);
+      if (data && data.auth === false && body.action !== "login") sessaoExpirada(data.error);
+      return data;
     } catch {
       return { ok: false, error: "o servidor de dados respondeu em formato inesperado" };
     }
@@ -243,24 +273,10 @@ function syncSnapshotToSheets(snapshot) {
   return sheetsQueue;
 }
 
-async function getSheetsHistory() {
-  const config = sheetsConfig();
-  try {
-    const sep = config.url.includes("?") ? "&" : "?";
-    const response = await fetch(`${config.url}${sep}action=history`, { credentials: "omit" });
-    return JSON.parse(await response.text());
-  } catch {
-    return { ok: false, error: "não consegui ler os dados salvos" };
-  }
-}
-
 async function loadSheetsHistory() {
-  let result = await callSheets({ action: "history" });
+  const result = await callSheets({ action: "history" });
   if (result.skipped) return false;
-  if (!result.ok || !Array.isArray(result.history)) {
-    const viaGet = await getSheetsHistory();
-    if (viaGet && Array.isArray(viaGet.history)) result = Object.assign({ ok: true }, viaGet);
-  }
+  if (result.auth === false) return false;
   if (!result.ok) {
     setNotice("Não consegui carregar os dados: " + (result.error || "erro desconhecido") + ". Atualize a página (F5).", "error");
     return false;
@@ -463,7 +479,8 @@ function applyBusinessRules(rows, referenceDay) {
         grupoServico: serviceGroupFor(code || record.servico),
       });
     });
-  const f = { semData: 0, outroAno: 0, hoje: 0, semCoi: 0, semTabela: 0, naoEncerrada: 0, semSituacao: !hasSituacao, diaBase: currentDay };
+  const f = { semData: 0, outroAno: 0, hoje: 0, semCoi: 0, semTabela: 0, repav: 0, naoEncerrada: 0, semSituacao: !hasSituacao, diaBase: currentDay };
+  const repav = [];
   const out = enrichedRows.filter((record) => {
     // Tratamento oficial (só 2 regras):
     // 1) "Visitado em": sai 2025 (ou antes) e o dia da base em diante
@@ -473,10 +490,13 @@ function applyBusinessRules(rows, referenceDay) {
     else if (date.getFullYear() <= 2025) { f.outroAno += 1; return false; }
     else if (dateKeyFromMs(record.visitadoEmMs) >= currentDay) { f.hoje += 1; return false; }
     if (record._semTabela) { f.semTabela += 1; return false; }
+    // REPAVIMENTAÇÃO: sai da meta, mas fica guardada para a aba REPAV
+    if (isRepav(record.procxCoi)) { f.repav += 1; repav.push(record); return false; }
     if (normKey(record.procxCoi) !== "COI") { f.semCoi += 1; return false; }
     return true;
   });
   out.funnel = f;
+  out.repav = repav;
   return out;
 }
 
@@ -603,6 +623,7 @@ async function parseWorkbookFromArrayBuffer(buffer, fileName = "") {
   const rows = applyBusinessRules(cleaned.rows, dayFromFileName(fileName) || todayKey());
   return {
     rows,
+    repav: rows.repav || [],
     duplicates: cleaned.duplicates,
     funnel: Object.assign({ brutas: raw.length, semChave: cleaned.discarded, duplicadas: cleaned.duplicates }, rows.funnel, { final: rows.length }),
   };
@@ -709,9 +730,11 @@ async function loadSavedState() {
   if (hasSheets) {
     // dados salvos sao a unica fonte: todo mundo ve o mesmo numero
     state.baseline = [];
+    state.repavBaseline = [];
     state.manualStatus = {};
     state.history = [];
     state.latestKeys = null;
+    state.repavLatestKeys = null;
     state.latestFileName = "";
     state.baselineFileName = "";
     setNotice("Carregando dados do painel...");
@@ -720,6 +743,7 @@ async function loadSavedState() {
     return;
   }
   state.baseline = await dbGet("baseline", []);
+  state.repavBaseline = await dbGet("repavBaseline", []);
   state.manualStatus = await dbGet("manualStatus", {});
   state.history = hasSheets ? [] : fixedDailyHistory(await dbGet("history", []));
   const latestKeys = hasSheets ? null : await dbGet("latestKeys", null);
@@ -811,6 +835,7 @@ async function saveState() {
   state.histVersion = (state.histVersion || 0) + 1;
   if (sheetsConfig().url) return; // dados ficam no servidor; nao copia tudo para o navegador
   await dbSet("baseline", state.baseline);
+  await dbSet("repavBaseline", state.repavBaseline || []);
   await dbSet("manualStatus", state.manualStatus);
   await dbSet("latestKeys", state.latestKeys ? Array.from(state.latestKeys) : null);
   await dbSet("history", state.history);
@@ -830,12 +855,62 @@ function deadlineInfo(record) {
   return { label: "No prazo", className: "ok" };
 }
 
+// Nova x repetida na base fixa do dia (mesma regra do Mensal 24h):
+// nova     = 1a vez que a O.S. aparece numa base fixa -> é a que conta para a meta
+// retorno  = já apareceu antes, tinha saído e voltou como EXOC (retorno de campo)
+// pendente = já estava na base fixa anterior (não foi tratada de um dia para o outro)
+let entradaCache = { key: "", value: null };
+function entradaContext() {
+  const cacheKey = [state.histVersion || 0, state.history.length, state.baselineDay].join("#");
+  if (entradaCache.key === cacheKey && entradaCache.value) return entradaCache.value;
+  const seen = new Set();
+  let prev = null;
+  fixedDailyHistory(state.history).forEach((snap) => {
+    if (!state.baselineDay || snap.dateKey >= state.baselineDay) return;
+    snapKeys(snap).forEach((k) => seen.add(k));
+    prev = snap;
+  });
+  const value = { seen, prevKeys: new Set(prev ? snapKeys(prev) : []) };
+  entradaCache = { key: cacheKey, value };
+  return value;
+}
+
+function snapKeys(snap) {
+  if (snap && Array.isArray(snap.records) && snap.records.length) return snap.records.map((r) => r.key);
+  return (snap && snap.keys) || [];
+}
+
+const ENTRADA_LABEL = { nova: "Nova", retorno: "Retornou", pendente: "Pendente anterior" };
+
+function saidaMs(key) {
+  const s = state.saidas;
+  if (!s || s.dia !== state.baselineDay || !s.idx) return null;
+  const i = s.idx[key];
+  return i == null ? null : Date.parse(s.times[i]) || null;
+}
+
 function decorateRecords() {
+  const ctx = entradaContext();
   state.records = state.baseline.map((record) => {
     const status = statusFor(record);
+    const entrada = !ctx.seen.has(record.key) ? "nova" : ctx.prevKeys.has(record.key) ? "pendente" : "retorno";
     const enriched = Object.assign({}, record, {
       status,
+      entrada,
+      entradaGrupo: entrada === "nova" ? "nova" : "repetida",
+      saiuEm: status === "tratado" ? saidaMs(record.key) : null,
       appearsLatest: state.latestKeys ? state.latestKeys.has(record.key) : true,
+      grupoServico: serviceGroupFor(record.codigoServico || record.servico),
+    });
+    enriched.deadline = deadlineInfo(enriched);
+    return enriched;
+  });
+  state.repavRecords = (state.repavBaseline || []).map((record) => {
+    const appears = state.repavLatestKeys ? state.repavLatestKeys.has(record.key) : true;
+    const enriched = Object.assign({}, record, {
+      status: appears ? "nao-tratado" : "tratado",
+      appearsLatest: appears,
+      saiuEm: appears ? null : saidaMs(record.key),
       grupoServico: serviceGroupFor(record.codigoServico || record.servico),
     });
     enriched.deadline = deadlineInfo(enriched);
@@ -843,8 +918,12 @@ function decorateRecords() {
   });
 }
 
+function viewRecords() {
+  return document.body.dataset.view === "repav" ? state.repavRecords : state.records;
+}
+
 function uniqueSorted(field) {
-  return Array.from(new Set(state.records.map((item) => item[field]).filter(Boolean))).sort((a, b) =>
+  return Array.from(new Set(viewRecords().map((item) => item[field]).filter(Boolean))).sort((a, b) =>
     a.localeCompare(b, "pt-BR")
   );
 }
@@ -888,17 +967,19 @@ function updateFilterOptions() {
   state.filters.status = setSelectValues(els.status, state.filters.status);
   state.filters.diretoria = fillSelect(els.diretoria, uniqueSorted("diretoria"), "Todas", state.filters.diretoria);
   const dirSel = normalizeFilterValues(state.filters.diretoria);
-  const microList = Array.from(new Set(state.records.filter((r) => dirSel.includes("todos") || dirSel.includes(r.diretoria)).map((r) => r.micro).filter(Boolean)))
+  const microList = Array.from(new Set(viewRecords().filter((r) => dirSel.includes("todos") || dirSel.includes(r.diretoria)).map((r) => r.micro).filter(Boolean)))
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
   state.filters.micro = fillSelect(els.micro, microList, "Todas", state.filters.micro);
   state.filters.ocorrencia = fillSelect(els.ocorrencia, uniqueSorted("descricaoEncerramento"), "Todas", state.filters.ocorrencia);
   state.filters.servico = fillSelect(els.servico, uniqueSorted("servico"), "Todos", state.filters.servico);
   if (els.grupoServico) state.filters.grupoServico = fillSelect(els.grupoServico, uniqueSorted("grupoServico"), "Todos", state.filters.grupoServico);
+  if (els.entrada) state.filters.entrada = setSelectValues(els.entrada, state.filters.entrada);
 }
 
 function filteredRecords() {
   const term = state.filters.search.toLowerCase();
-  return state.records.filter((record) => {
+  const isRepavView = document.body.dataset.view === "repav";
+  return viewRecords().filter((record) => {
     const text = [
       record.solicitacao,
       record.ligacao,
@@ -917,7 +998,8 @@ function filteredRecords() {
       filterMatches("micro", record.micro) &&
       filterMatches("ocorrencia", record.descricaoEncerramento) &&
       filterMatches("servico", record.servico) &&
-      filterMatches("grupoServico", record.grupoServico || "Sem grupo")
+      filterMatches("grupoServico", record.grupoServico || "Sem grupo") &&
+      (isRepavView || filterMatches("entrada", record.entradaGrupo))
     );
   });
 }
@@ -962,6 +1044,7 @@ function renderSummary(records) {
         + ` − ${number(f.outroAno)} visitadas em 2025`
         + ` − ${number(f.hoje)} visitadas no dia da base${f.diaBase ? ` (${f.diaBase.slice(8)}/${f.diaBase.slice(5, 7)})` : ""} ou depois`
         + ` − ${number(f.semTabela || 0)} com código fora da tabela auxiliar`
+        + (f.repav ? ` − ${number(f.repav)} da REPAVIMENTAÇÃO (vão para a aba REPAV, fora da meta)` : "")
         + ` − ${number(f.semCoi)} de outra responsabilidade (não COI)`
         + ` = <strong>${number(f.final)}</strong> para tratar.`
         + (f.semData ? ` Obs.: ${number(f.semData)} sem data em "Visitado em" foram mantidas.` : "")
@@ -970,10 +1053,13 @@ function renderSummary(records) {
   }
 }
 
-function renderTable(records) {
-  state.lastTableRecords = records;
+function renderTable(records, tbody, comEntrada) {
+  if (!tbody) { tbody = els.body; comEntrada = true; }
+  if (tbody === els.body) state.lastTableRecords = records;
+  else state.lastRepavRecords = records;
+  const cols = comEntrada ? 14 : 13;
   const visible = records.slice(0, 200);
-  els.body.innerHTML = "";
+  tbody.innerHTML = "";
   const fragment = document.createDocumentFragment();
   visible.forEach((record) => {
     const tr = document.createElement("tr");
@@ -988,21 +1074,27 @@ function renderTable(records) {
       <td>${esc(record.grupoServico || "Sem grupo")}</td>
       <td>${esc(record.descricaoEncerramento)}</td>
       <td>${esc(record.visitadoEm)}</td>
+      ${comEntrada ? `<td><span class="pill entrada-${esc(record.entrada)}">${esc(ENTRADA_LABEL[record.entrada] || "-")}</span></td>` : ""}
       <td><span class="pill ${esc(record.deadline.className)}">${esc(record.deadline.label)}</span></td>
       <td><span class="pill ${record.appearsLatest ? "open" : "ok"}">${
-      record.appearsLatest ? "Permanece" : "Saiu"
+      record.appearsLatest ? "Permanece" : "Saiu" + (record.saiuEm ? " " + hourLabel(new Date(record.saiuEm).toISOString()) : "")
     }</span></td>
-  <td>${claimCell(record)}</td>
+      <td>${claimCell(record)}</td>
     `;
     fragment.appendChild(tr);
   });
-  els.body.appendChild(fragment);
+  tbody.appendChild(fragment);
   if (records.length > visible.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="13">Mostrando ${number(visible.length)} de ${number(
+    tr.innerHTML = `<td colspan="${cols}">Mostrando ${number(visible.length)} de ${number(
       records.length
-    )}. Use os filtros ou exporte o CSV para ver tudo.</td>`;
-    els.body.appendChild(tr);
+    )}. Use os filtros ou exporte para ver tudo.</td>`;
+    tbody.appendChild(tr);
+  }
+  if (!records.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="${cols}">Nenhuma EXOC nesta visão.</td>`;
+    tbody.appendChild(tr);
   }
 }
 
@@ -1066,7 +1158,7 @@ function slimRecords(records) {
     }));
 }
 
-function addSnapshot(fileName, records, type = "atualizacao") {
+function addSnapshot(fileName, records, type = "atualizacao", repavRecords = []) {
   state.histVersion = (state.histVersion || 0) + 1;
   const dateKey = todayKey();
   state.lastUpdate = { at: new Date().toISOString(), file: fileName };
@@ -1079,6 +1171,9 @@ function addSnapshot(fileName, records, type = "atualizacao") {
     keys: records.map((record) => record.key),
     // atualizações só precisam das chaves (o que ainda está na base); a base fixa guarda os registros
     records: type === "base_inicial" ? slimRecords(records) : [],
+    // REPAVIMENTAÇÃO: guardada junto, mas fora da meta
+    repavKeys: (repavRecords || []).map((record) => record.key),
+    repav: type === "base_inicial" ? slimRecords(repavRecords || []) : [],
   };
   state.history = fixedDailyHistory(state.history);
   const existingSameDay = state.history.find((item) => item.dateKey === dateKey);
@@ -1112,12 +1207,13 @@ function hourLabel(iso) {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
 
-// Regra da meta 24h (por dia):
-// - volumetria do dia = base fixa da manha (1a base do dia), ja tratada pelas regras
-// - entram as que ja estavam vencidas E as que ainda nao venceram
-// - dentro da meta = nao aparece mais na base fixa do dia seguinte
-// - fora da meta  = continua na base fixa do dia seguinte (nao tratada de um dia p/ o outro)
-// - o ultimo dia fica "em andamento" ate chegar a proxima base fixa
+// Regra da meta 24h (por dia) - definida com a coordenação em nov/2026:
+// - só entra na meta a EXOC NOVA: a 1a vez que a O.S. aparece numa base fixa
+// - dentro da meta = saiu até a base fixa do dia seguinte (tratou até a virada/1a atualização)
+// - fora da meta  = ainda estava na base fixa do dia seguinte
+// - repetidas (retorno de campo ou pendentes de outro dia) aparecem no painel para tratar,
+//   mas NÃO entram de novo na volumetria da meta
+// - o último dia fica "em andamento" até chegar a próxima base fixa
 let monthlyCache = { key: "", value: null };
 function calculateMonthly() {
   const cacheKey = [state.histVersion || 0, state.history.length, JSON.stringify([state.filters.diretoria, state.filters.micro, state.filters.grupoServico]), state.latestSnap ? state.latestSnap.uploadedAt : "", state.selectedMonth].join("#");
@@ -1141,8 +1237,9 @@ function calculateMonthlyNow() {
     const day = {
       day: snap.dateKey, month: snap.dateKey.slice(0, 7), fileName: snap.fileName || "", uploadedAt: snap.uploadedAt || "",
       closedBy: next ? next.dateKey : "", partialAt: partialKeys ? latest.uploadedAt : "",
-      total: 0, novas: 0, vindas: 0, vencidas: 0, treated: 0, late: 0, open: 0, partialTreated: 0,
+      total: 0, novas: 0, vindas: 0, retornos: 0, vencidas: 0, treated: 0, late: 0, open: 0, partialTreated: 0,
     };
+    const prevKeys = new Set(index > 0 ? snapKeys(hist[index - 1]) : []);
     (snap.records || []).forEach((record) => {
       const parts = String(record.key).split("|");
       const nova = !seenBefore.has(record.key);
@@ -1162,12 +1259,15 @@ function calculateMonthlyNow() {
         micro: record.micro || "",
         ocorrencia: record.descricaoEncerramento || "",
         visitadoEm: record.visitadoEm || record.referenceDate || "",
-        entrada: nova ? "Nova no dia" : "Vinda de dia anterior",
+        entrada: nova ? "Nova no dia" : prevKeys.has(record.key) ? "Pendente de dia anterior" : "Retornou (já tinha aparecido antes)",
+        entraMeta: nova,
         vencidaNaExtracao,
         conferidoEm: next ? next.dateKey : "",
         situacao: "",
       };
-      if (!next) {
+      if (!nova) {
+        it.situacao = "Repetida (fora da conta)";
+      } else if (!next) {
         it.situacao = partialKeys && !partialKeys.has(record.key) ? "Em andamento (já saiu)" : "Em andamento";
       } else {
         it.situacao = nextKeys.has(record.key) ? "Fora da meta" : "Tratada na meta";
@@ -1176,7 +1276,13 @@ function calculateMonthlyNow() {
       if (!fMic.includes("todos") && !fMic.includes(it.micro)) return;
       if (!filterMatches("grupoServico", it.grupoServico || "Sem grupo")) return;
       day.total += 1;
-      if (nova) day.novas += 1; else day.vindas += 1;
+      if (!nova) {
+        day.vindas += 1;
+        if (!prevKeys.has(record.key)) day.retornos += 1;
+        items.push(it);
+        return;
+      }
+      day.novas += 1;
       if (vencidaNaExtracao) day.vencidas += 1;
       if (it.situacao === "Tratada na meta") day.treated += 1;
       else if (it.situacao === "Fora da meta") day.late += 1;
@@ -1194,7 +1300,9 @@ function calculateMonthlyNow() {
     if (!months.has(d.month)) months.set(d.month, { month: d.month, eligible: 0, treated: 0, late: 0, waiting: 0, rate: 0, days: 0 });
     const m = months.get(d.month);
     m.days += 1;
-    m.eligible += d.total;
+    m.eligible += d.novas;
+    m.baseTotal = (m.baseTotal || 0) + d.total;
+    m.vindas = (m.vindas || 0) + d.vindas;
     m.treated += d.treated;
     m.late += d.late;
     m.waiting += d.open;
@@ -1235,15 +1343,15 @@ function monthDayRows(monthly, monthKey) {
 function daySituation(d) {
   if (d.noBase) return "Sem base fixa";
   if (d.closedBy) return `Fechado (conferido na base de ${shortDay(d.closedBy)})`;
-  if (d.partialAt) return `Em andamento: ${number(d.partialTreated)} já saíram até ${hourLabel(d.partialAt)}`;
+  if (d.partialAt) return `Em andamento: ${number(d.partialTreated)} novas já saíram até ${hourLabel(d.partialAt)}`;
   return "Em andamento (aguardando atualização)";
 }
 
 function monthTotals(list) {
   return list.filter((d) => !d.noBase).reduce((a, d) => {
-    ["total", "novas", "vindas", "vencidas", "treated", "late", "open"].forEach((k) => { a[k] += d[k]; });
+    ["total", "novas", "vindas", "retornos", "vencidas", "treated", "late", "open"].forEach((k) => { a[k] += d[k] || 0; });
     return a;
-  }, { total: 0, novas: 0, vindas: 0, vencidas: 0, treated: 0, late: 0, open: 0 });
+  }, { total: 0, novas: 0, vindas: 0, retornos: 0, vencidas: 0, treated: 0, late: 0, open: 0 });
 }
 
 function fillMonthSelect(monthly) {
@@ -1406,43 +1514,150 @@ function pctBr(value) {
   return value.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
 }
 
-function renderDiretorias() {
-  const grid = document.getElementById("dirGrid");
-  if (!grid) return;
+// Ranking: quem zerou (100%) primeiro fica na frente e NÃO cai quando outra diretoria
+// também chega a 100%. A ordem dos 100% é pela hora em que a última EXOC da diretoria saiu.
+// Quem ainda não zerou vem depois, pelo % (empate: maior volume primeiro).
+function rankingDiretorias(records) {
   const porDir = new Map();
-  state.records.forEach((r) => {
+  records.forEach((r) => {
     const nome = r.diretoria || "Não localizado";
-    const d = porDir.get(nome) || { nome, total: 0, tratadas: 0, vencidas: 0 };
+    const d = porDir.get(nome) || { nome, total: 0, tratadas: 0, vencidas: 0, ultimaSaida: 0, semHora: 0 };
     d.total += 1;
-    if (r.status === "tratado") d.tratadas += 1;
-    else if (r.deadline && r.deadline.className === "danger") d.vencidas += 1;
+    if (r.status === "tratado") {
+      d.tratadas += 1;
+      if (r.saiuEm) d.ultimaSaida = Math.max(d.ultimaSaida, r.saiuEm);
+      else d.semHora += 1;
+    } else if (r.deadline && r.deadline.className === "danger") d.vencidas += 1;
     porDir.set(nome, d);
   });
-  const lista = Array.from(porDir.values())
-    .map((d) => Object.assign(d, { pct: d.total ? (d.tratadas / d.total) * 100 : 0 }))
-    .sort((a, b) => b.pct - a.pct || b.total - a.total);
+  const lista = Array.from(porDir.values()).map((d) => Object.assign(d, {
+    pct: d.total ? (d.tratadas / d.total) * 100 : 0,
+    concluida: d.total > 0 && d.tratadas === d.total,
+  }));
+  lista.forEach((d) => { d.concluidaEm = d.concluida && !d.semHora && d.ultimaSaida ? d.ultimaSaida : null; });
+  return lista.sort((a, b) => {
+    if (a.concluida !== b.concluida) return a.concluida ? -1 : 1;
+    if (a.concluida) {
+      const ta = a.concluidaEm || Number.MAX_SAFE_INTEGER, tb = b.concluidaEm || Number.MAX_SAFE_INTEGER;
+      return ta - tb || b.total - a.total;
+    }
+    return b.pct - a.pct || b.total - a.total;
+  });
+}
 
-
-  if (!lista.length) {
-    grid.innerHTML = `<div class="dir-card"><span class="dir-detalhe">Sem base do dia carregada ainda.</span></div>`;
-    return;
-  }
-
-  grid.innerHTML = lista.map((d, i) => {
-    const alerta = d.pct < DIR_ALERTA_PCT;
+function dirCardsHtml(lista, vazio) {
+  if (!lista.length) return `<div class="dir-card"><span class="dir-detalhe">${esc(vazio || "Sem base do dia carregada ainda.")}</span></div>`;
+  return lista.map((d, i) => {
+    const alerta = !d.concluida && d.pct < DIR_ALERTA_PCT;
     const abertas = d.total - d.tratadas;
+    const zerou = d.concluida
+      ? ` · <span class="dir-ok">✅ zerou${d.concluidaEm ? ` às ${esc(hourLabel(new Date(d.concluidaEm).toISOString()))}` : ""}</span>`
+      : "";
     return `
-      <article class="dir-card${alerta ? " alerta" : ""}">
+      <article class="dir-card${alerta ? " alerta" : ""}${d.concluida ? " concluida" : ""}">
         <div class="dir-top">
           <span class="dir-nome">${esc(d.nome)} ${DIR_MEDALHAS[i] || ""}${alerta ? `<span class="dir-alerta">🚨 Abaixo de ${DIR_ALERTA_PCT}%</span>` : ""}</span>
           <span class="dir-pct">${pctBr(d.pct)}</span>
         </div>
         <div class="dir-detalhe">
-          ${number(d.total)} EXOCs · ${number(d.tratadas)} tratadas ✅ · ${number(abertas)} não tratadas ⏳${d.vencidas ? ` · <span class="venc">${number(d.vencidas)} vencidas</span>` : ""}
+          ${number(d.total)} EXOCs · ${number(d.tratadas)} tratadas ✅ · ${number(abertas)} não tratadas ⏳${d.vencidas ? ` · <span class="venc">${number(d.vencidas)} vencidas</span>` : ""}${zerou}
         </div>
         <span class="dir-track"><span class="dir-fill" style="width:${d.pct.toFixed(1)}%"></span></span>
       </article>`;
   }).join("");
+}
+
+function renderDiretorias() {
+  const grid = document.getElementById("dirGrid");
+  if (!grid) return;
+  grid.innerHTML = dirCardsHtml(rankingDiretorias(state.records));
+}
+
+// ===== Aba "Tratativa do dia" (geral / novas / repetidas) =====
+function resumoGrupo(records) {
+  const total = records.length;
+  const tratadas = records.filter((r) => r.status === "tratado").length;
+  return { total, tratadas, abertas: total - tratadas, pct: total ? (tratadas / total) * 100 : 0 };
+}
+
+function cabecalhoGrupo(titulo, sub, r, destaque) {
+  return `
+    <div class="dia-head${destaque ? " destaque" : ""}">
+      <span class="dia-titulo">${titulo}</span>
+      <span class="dia-sub">${sub}</span>
+      <strong class="dia-pct">${pctBr(r.pct)}</strong>
+      <span class="dia-conta">${number(r.tratadas)} de ${number(r.total)} tratadas · ${number(r.abertas)} não tratadas</span>
+      <span class="dir-track"><span class="dir-fill" style="width:${r.pct.toFixed(1)}%"></span></span>
+    </div>`;
+}
+
+function evolucaoHtml(grupos) {
+  const s = state.saidas;
+  if (!s || s.dia !== state.baselineDay || !s.times || !s.times.length) {
+    return `<p class="dia-vazio">A evolução por horário aparece a partir da 1ª atualização do dia.</p>`;
+  }
+  const linhas = s.times.map((t, i) => {
+    const cel = grupos.map((g) => {
+      const n = g.records.length;
+      const saiu = g.records.filter((r) => r.saiuEm && r.saiuEm <= Date.parse(t)).length;
+      const pct = n ? (saiu / n) * 100 : 0;
+      return `<td><span class="evo-val">${pctBr(pct)}</span><span class="evo-bar"><span style="width:${pct.toFixed(1)}%"></span></span></td>`;
+    }).join("");
+    return `<tr><td>${esc(hourLabel(t))}</td>${cel}</tr>`;
+  });
+  return `<table class="evo-table"><thead><tr><th>Atualização</th>${grupos.map((g) => `<th>${esc(g.nome)}</th>`).join("")}</tr></thead><tbody>${linhas.join("")}</tbody></table>`;
+}
+
+function renderTratativaDia() {
+  const box = document.getElementById("diaGrid");
+  if (!box || document.body.dataset.view !== "dia") return;
+  const todas = state.records;
+  if (!todas.length) {
+    box.innerHTML = `<div class="dir-card"><span class="dir-detalhe">Sem base do dia carregada ainda.</span></div>`;
+    return;
+  }
+  const novas = todas.filter((r) => r.entradaGrupo === "nova");
+  const repetidas = todas.filter((r) => r.entradaGrupo === "repetida");
+  const retornos = repetidas.filter((r) => r.entrada === "retorno").length;
+  const rg = resumoGrupo(todas), rn = resumoGrupo(novas), rr = resumoGrupo(repetidas);
+  const dia = shortDay(state.baselineDay);
+  box.innerHTML = `
+    <section class="dia-col">
+      ${cabecalhoGrupo("Evolução geral do dia", `Base fixa de ${esc(dia)}: ${number(rn.total)} novas + ${number(rr.total)} repetidas`, rg)}
+      <div class="dia-mix">
+        <span><b>Novas:</b> ${number(rn.tratadas)}/${number(rn.total)} (${pctBr(rn.pct)})</span>
+        <span><b>Repetidas:</b> ${number(rr.tratadas)}/${number(rr.total)} (${pctBr(rr.pct)})</span>
+      </div>
+      <h4>Evolução por atualização</h4>
+      ${evolucaoHtml([{ nome: "Geral", records: todas }, { nome: "Novas", records: novas }, { nome: "Repetidas", records: repetidas }])}
+      <h4>Ranking geral por diretoria</h4>
+      <div class="dir-grid">${dirCardsHtml(rankingDiretorias(todas))}</div>
+    </section>
+    <section class="dia-col">
+      ${cabecalhoGrupo("⭐ Novas do dia — contam para a meta", `O.S. que apareceram pela 1ª vez na base fixa de ${esc(dia)}`, rn, true)}
+      <h4>Ranking das novas por diretoria</h4>
+      <div class="dir-grid">${dirCardsHtml(rankingDiretorias(novas), "Nenhuma O.S. nova na base de hoje.")}</div>
+    </section>
+    <section class="dia-col">
+      ${cabecalhoGrupo("🔁 Repetidas — retornando como EXOC", `${number(retornos)} retornaram de campo · ${number(rr.total - retornos)} pendentes de dias anteriores. Fora da conta da meta.`, rr)}
+      <h4>Ranking das repetidas por diretoria</h4>
+      <div class="dir-grid">${dirCardsHtml(rankingDiretorias(repetidas), "Nenhuma repetida na base de hoje.")}</div>
+    </section>`;
+}
+
+// ===== Aba REPAV (não entra na meta) =====
+function renderRepav(records) {
+  const body = document.getElementById("repavBody");
+  if (!body || document.body.dataset.view !== "repav") return;
+  const r = resumoGrupo(state.repavRecords);
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set("repavTotal", number(r.total));
+  set("repavTratadas", number(r.tratadas));
+  set("repavAbertas", number(r.abertas));
+  set("repavPct", pctBr(r.pct));
+  const aviso = document.getElementById("repavAviso");
+  if (aviso) aviso.hidden = !(state.latestKeys && !state.repavLatestKeys);
+  renderTable(records, body, false);
 }
 
 function render() {
@@ -1452,7 +1667,9 @@ function render() {
   const records = filteredRecords();
   renderSummary(records);
   renderDiretorias();
-  renderTable(records);
+  renderTratativaDia();
+  renderRepav(records);
+  if (document.body.dataset.view !== "repav") renderTable(records);
   renderCharts(records);
   renderSla(records);
   renderMonthly();
@@ -1525,6 +1742,7 @@ function dailyExportRows() {
     "Ocorrencia",
     "Visitado em",
     "Ultima base",
+    "Entrada",
   ];
   const rows = filteredRecords().map((record) => [
     record.procxCoi,
@@ -1540,6 +1758,7 @@ function dailyExportRows() {
     record.descricaoEncerramento,
     record.visitadoEm,
     record.appearsLatest ? "Permanece" : "Saiu",
+    record.entrada ? ENTRADA_LABEL[record.entrada] : "REPAV (fora da meta)",
   ]);
   return { headers, rows };
 }
@@ -1548,30 +1767,34 @@ function monthlyExportData() {
   const monthly = calculateMonthly();
   const month = monthly.selected.month || "sem-mes";
   const list = monthDayRows(monthly, monthly.selected.month);
-  const summaryHeaders = ["Dia", "Arquivo da base fixa", "Base fixa (volumetria)", "Novas no dia", "Vindas de dias anteriores", "Ja vencidas na extracao", "Tratadas na meta", "Nao tratadas -> dia seguinte (fora da meta)", "Em andamento", "% na meta", "Situacao do dia"];
+  const summaryHeaders = ["Dia", "Arquivo da base fixa", "Base fixa (total na tela)", "Novas no dia (volumetria da meta)", "Repetidas (fora da conta)", "Das repetidas: retornaram", "Novas ja vencidas na extracao", "Tratadas na meta", "Fora da meta", "Em andamento", "% na meta", "Situacao do dia"];
   const summaryRows = list.map((d) => d.noBase
-    ? [shortDay(d.day) + "/" + d.day.slice(0, 4), "", "", "", "", "", "", "", "", "", daySituation(d)]
-    : [shortDay(d.day) + "/" + d.day.slice(0, 4), d.fileName, d.total, d.novas, d.vindas, d.vencidas, d.treated, d.late, d.open, (d.treated + d.late) ? pctText(rateOf(d.treated, d.late)) : "", daySituation(d)]);
+    ? [shortDay(d.day) + "/" + d.day.slice(0, 4), "", "", "", "", "", "", "", "", "", "", daySituation(d)]
+    : [shortDay(d.day) + "/" + d.day.slice(0, 4), d.fileName, d.total, d.novas, d.vindas, d.retornos, d.vencidas, d.treated, d.late, d.open, (d.treated + d.late) ? pctText(rateOf(d.treated, d.late)) : "", daySituation(d)]);
   const t = monthTotals(list);
-  summaryRows.push(["Total do mes", "", t.total, t.novas, t.vindas, t.vencidas, t.treated, t.late, t.open, pctText(rateOf(t.treated, t.late)), t.open ? "Mes com dia em andamento" : "Mes fechado"]);
-  const detailHeaders = ["Dia da base fixa", "Numero Solicitacao", "Numero Ligacao", "Codigo do servico", "Servico", "Grupo de servico", "Ocorrencia", "Diretoria", "Micro", "Localidade", "RESPONSAVEL", "Visitado em", "Entrada", "Ja vencida na extracao", "Resultado 24h", "Conferido na base de"];
+  summaryRows.push(["Total do mes", "", t.total, t.novas, t.vindas, t.retornos, t.vencidas, t.treated, t.late, t.open, pctText(rateOf(t.treated, t.late)), t.open ? "Mes com dia em andamento" : "Mes fechado"]);
+  const detailHeaders = ["Dia da base fixa", "Numero Solicitacao", "Numero Ligacao", "Codigo do servico", "Servico", "Grupo de servico", "Ocorrencia", "Diretoria", "Micro", "Localidade", "RESPONSAVEL", "Visitado em", "Entrada", "Entra na meta", "Ja vencida na extracao", "Resultado 24h", "Conferido na base de"];
   const detailRows = monthly.items.filter((it) => it.month === monthly.selected.month)
     .sort((a, b) => a.day.localeCompare(b.day) || String(a.solicitacao).localeCompare(String(b.solicitacao), "pt-BR", { numeric: true }))
-    .map((it) => [shortDay(it.day) + "/" + it.day.slice(0, 4), it.solicitacao, it.ligacao, it.codigoServico, it.servico, it.grupoServico || "Sem grupo", it.ocorrencia, it.diretoria, it.micro, it.localidade, it.procxCoi, it.visitadoEm, it.entrada, it.vencidaNaExtracao ? "Sim" : "Nao", it.situacao, it.conferidoEm ? shortDay(it.conferidoEm) : ""]);
+    .map((it) => [shortDay(it.day) + "/" + it.day.slice(0, 4), it.solicitacao, it.ligacao, it.codigoServico, it.servico, it.grupoServico || "Sem grupo", it.ocorrencia, it.diretoria, it.micro, it.localidade, it.procxCoi, it.visitadoEm, it.entrada, it.entraMeta ? "Sim" : "Nao", it.vencidaNaExtracao ? "Sim" : "Nao", it.situacao, it.conferidoEm ? shortDay(it.conferidoEm) : ""]);
   return { month, summaryHeaders, summaryRows, detailHeaders, detailRows };
 }
 function exportCsv() {
   exportDailyCsv();
 }
 
+function exportBaseName() {
+  return document.body.dataset.view === "repav" ? "base-diaria-repav" : "base-diaria-exoc";
+}
+
 function exportDailyCsv() {
   const data = dailyExportRows();
-  download("base-diaria-exoc.csv", csvText(data.headers, data.rows), "text/csv;charset=utf-8");
+  download(exportBaseName() + ".csv", csvText(data.headers, data.rows), "text/csv;charset=utf-8");
 }
 
 async function exportDailyXlsx() {
   const data = dailyExportRows();
-  await exportWorkbook("base-diaria-exoc.xlsx", [{ name: "Diario", rows: [data.headers].concat(data.rows) }]);
+  await exportWorkbook(exportBaseName() + ".xlsx", [{ name: document.body.dataset.view === "repav" ? "REPAV" : "Diario", rows: [data.headers].concat(data.rows) }]);
 }
 
 function exportFormat() {
@@ -1600,7 +1823,7 @@ async function exportMonthTable(kind) {
 function monthlyResultText(monthly) {
   const m = monthly.selected;
   if (!m.month) return "Nenhuma base fixa salva ainda.";
-  return `${monthLabel(m.month)}: ${number(m.days)} dia(s) com base, volumetria ${number(m.eligible)}, ${number(m.treated)} na meta, ${number(m.late)} fora da meta, resultado ${pctText(m.rate)}.`;
+  return `${monthLabel(m.month)}: ${number(m.days)} dia(s) com base, volumetria da meta (novas) ${number(m.eligible)}, ${number(m.treated)} na meta, ${number(m.late)} fora da meta, resultado ${pctText(m.rate)}.`;
 }
 
 function renderLastUpdate() {
@@ -1624,18 +1847,19 @@ function renderLastUpdate() {
 }
 
 let refreshing = false;
-async function refreshFromSheets() {
-  if (refreshing || document.visibilityState !== "visible" || !sheetsConfig().url) return;
+async function refreshFromSheets(force) {
+  if (refreshing || !state.sessao || !sheetsConfig().url) return;
+  if (force !== true && document.visibilityState !== "visible") return;
   refreshing = true;
   try {
+    if (force !== true) {
+      const stamp = await callSheets({ action: "stamp" });
+      if (stamp && stamp.ok && typeof stamp.stamp === "string" && stamp.stamp === state.remoteStamp) return;
+    }
     const before = state.lastUpdate && state.lastUpdate.at;
-    const stamp = await callSheets({ action: "stamp" });
-    if (stamp && stamp.ok && typeof stamp.stamp === "string" && stamp.stamp === state.remoteStamp) return;
     if (await loadSheetsHistory()) {
-      if (state.lastUpdate && state.lastUpdate.at !== before) {
-        render();
-        setNotice("Painel atualizado com a última base enviada.", "ok");
-      }
+      render();
+      if (state.lastUpdate && state.lastUpdate.at !== before) setNotice("Painel atualizado com a última base enviada.", "ok");
     }
   } finally {
     refreshing = false;
@@ -1666,13 +1890,16 @@ async function fixBaseOfDay(file, parsed) {
   state.latestKeys = null;
   state.latestFileName = "";
   state.manualStatus = {};
-  addSnapshot(file.name, state.baseline, "base_inicial");
+  state.repavBaseline = parsed.repav || [];
+  state.repavLatestKeys = null;
+  addSnapshot(file.name, state.baseline, "base_inicial", state.repavBaseline);
   await saveState();
 }
 
 els.baselineFile.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
+  if (!podeSubirBase()) { event.target.value = ""; setNotice("Seu perfil não pode subir bases.", "error"); return; }
   try {
     if (state.baselineDay === todayKey() && !confirm(`Já existe a base fixa de hoje (${state.baselineFileName}). Substituir pela "${file.name}"? Use isso só para corrigir uma base errada.`)) return;
     setNotice("Lendo e tratando a base fixa do dia...");
@@ -1690,6 +1917,7 @@ els.baselineFile.addEventListener("change", async (event) => {
 els.latestFile.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
+  if (!podeSubirBase()) { event.target.value = ""; setNotice("Seu perfil não pode subir bases.", "error"); return; }
   try {
     setNotice("Lendo e tratando a base enviada...");
     const parsed = await readFile(file);
@@ -1701,9 +1929,10 @@ els.latestFile.addEventListener("change", async (event) => {
       return;
     }
     state.latestKeys = new Set(parsed.rows.map((record) => record.key));
+    state.repavLatestKeys = new Set((parsed.repav || []).map((record) => record.key));
     state.latestFileName = file.name;
-    state.latestSnap = { dateKey: todayKey(), type: "atualizacao", uploadedAt: new Date().toISOString(), fileName: file.name, keys: Array.from(state.latestKeys) };
-    addSnapshot(file.name, parsed.rows, "atualizacao");
+    state.latestSnap = { dateKey: todayKey(), type: "atualizacao", uploadedAt: new Date().toISOString(), fileName: file.name, keys: Array.from(state.latestKeys), repavKeys: Array.from(state.repavLatestKeys) };
+    addSnapshot(file.name, parsed.rows, "atualizacao", parsed.repav || []);
     await saveState();
     setNotice("Atualização aplicada sobre a base fixa de hoje. A volumetria não muda; só tratadas e não tratadas.", "ok");
     render();
@@ -1784,6 +2013,7 @@ const filterControls = [
   [els.ocorrencia, "ocorrencia"],
   [els.servico, "servico"],
   [els.grupoServico, "grupoServico"],
+  [els.entrada, "entrada"],
 ];
 
 filterControls.forEach(function(item) {
@@ -1801,21 +2031,30 @@ filterControls.forEach(function(item) {
   });
 });
 
+const VIEW_TITLES = {
+  table: "Acompanhamento diário das EXOCs",
+  dia: "Tratativa do dia — % do que entrou novo",
+  monthly: "Acompanhamento mensal EXOC 24h",
+  charts: "Dinâmica para envio aos programadores",
+  repav: "EXOCs da REPAVIMENTAÇÃO (fora da meta)",
+};
+
 function setView(view) {
   document.body.dataset.view = view;
   els.tableView.classList.toggle("hidden", view !== "table");
   els.chartView.classList.toggle("hidden", view !== "charts");
   els.monthlyView.classList.toggle("hidden", view !== "monthly");
   els.slaView.classList.toggle("hidden", true);
-  els.viewTable.classList.toggle("active", view === "table");
-  els.viewCharts.classList.toggle("active", view === "charts");
-  els.viewMonthly.classList.toggle("active", view === "monthly");
-  els.viewTitle.textContent =
-    view === "monthly"
-      ? "Acompanhamento mensal EXOC 24h"
-      : view === "charts"
-        ? "Dinâmica para envio aos programadores"
-        : "Acompanhamento diário das EXOCs";
+  const diaView = document.getElementById("diaView");
+  const repavView = document.getElementById("repavView");
+  if (diaView) diaView.classList.toggle("hidden", view !== "dia");
+  if (repavView) repavView.classList.toggle("hidden", view !== "repav");
+  [["viewTable", "table"], ["viewDia", "dia"], ["viewMonthly", "monthly"], ["viewCharts", "charts"], ["viewRepav", "repav"]].forEach(([id, v]) => {
+    const b = document.getElementById(id);
+    if (b) b.classList.toggle("active", view === v);
+  });
+  els.viewTitle.textContent = VIEW_TITLES[view] || VIEW_TITLES.table;
+  render();
   if (view === "monthly") els.resultText.textContent = monthlyResultText(calculateMonthly());
 }
 
@@ -1824,8 +2063,12 @@ function on(element, eventName, handler) {
 }
 
 on(els.viewTable, "click", () => setView("table"));
-on(els.viewCharts, "click", () => { setView("charts"); render(); });
+on(els.viewCharts, "click", () => setView("charts"));
 on(els.viewMonthly, "click", () => setView("monthly"));
+on(document.getElementById("viewDia"), "click", () => setView("dia"));
+on(document.getElementById("viewRepav"), "click", () => setView("repav"));
+on(document.getElementById("repavExportCsv"), "click", exportDailyCsv);
+on(document.getElementById("repavExportXlsx"), "click", exportDailyXlsx);
 on(document.getElementById("monthExportSummary"), "click", () => exportMonthTable("unificado"));
 on(document.getElementById("monthExportDetail"), "click", () => exportMonthTable("analitico"));
 async function savePastBase(event) {
@@ -1843,18 +2086,21 @@ async function savePastBase(event) {
     const cleaned = cleanRows(raw);
     const rows = applyBusinessRules(cleaned.rows, day);
     const records = slimRecords(rows);
+    const repavRecords = slimRecords(rows.repav || []);
     state.funnel = Object.assign({ brutas: raw.length, semChave: cleaned.discarded, duplicadas: cleaned.duplicates }, rows.funnel, { final: rows.length });
     const snapshot = {
       id: `${day}-base_inicial`, fileName: file.name, type: "base_inicial", dateKey: day,
       uploadedAt: new Date().toISOString(),
       baseAt: day === today ? new Date().toISOString() : new Date(`${day}T08:00:00`).toISOString(),
       keys: records.map((r) => r.key), records,
+      repavKeys: repavRecords.map((r) => r.key), repav: repavRecords,
     };
     state.history = fixedDailyHistory(state.history).filter((h) => h.dateKey !== day).concat([snapshot])
       .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
     state.histVersion = (state.histVersion || 0) + 1;
     if (day === today) {
       state.baseline = rows; state.baselineDay = day; state.baselineFileName = file.name;
+      state.repavBaseline = rows.repav || []; state.repavLatestKeys = null;
       state.latestKeys = null; state.latestFileName = ""; state.latestSnap = null;
     }
     render();
@@ -1961,25 +2207,30 @@ on(els.pivotRow1, "change", render);
 on(els.pivotRow2, "change", render);
 on(els.pivotColumn, "change", render);
 
-try {
-  const startup = loadBaseline();
-  if (startup && typeof startup.then === "function") {
-    startup.then(function() {}, function(error) {
-      console.error(error);
-      setNotice("Erro ao carregar o painel: " + (error && error.message ? error.message : error), "error");
-    });
+function iniciarPainel() {
+  try {
+    const startup = loadBaseline();
+    if (startup && typeof startup.then === "function") {
+      startup.then(function() {}, function(error) {
+        console.error(error);
+        setNotice("Erro ao carregar o painel: " + (error && error.message ? error.message : error), "error");
+      });
+    }
+  } catch (error) {
+    console.error(error);
+    setNotice("Erro ao carregar o painel: " + (error && error.message ? error.message : error), "error");
   }
-} catch (error) {
-  console.error(error);
-  setNotice("Erro ao carregar o painel: " + (error && error.message ? error.message : error), "error");
 }
 
 
-// ===== "Vou tratar": quem pegou cada EXOC no dia =====
-const OPERADOR_KEY = "painel-exoc-operador";
+// ===== LOGIN: cada pessoa entra com o próprio usuário e senha =====
+// A sessão vale até o fim do dia. O "Vou tratar" usa o nome de quem está logado.
+const SESSAO_KEY = "painel-exoc-sessao";
 const MAQUINA_KEY = "painel-exoc-maquina";
+const PERFIL_LABEL = { admin: "Administrador", gestao: "Analista (sobe bases)", programador: "Programador" };
+let painelIniciado = false;
 
-// identidade fixa deste computador/navegador (criada uma vez, nao muda)
+// identidade fixa deste computador/navegador (só para o registro de acessos)
 function maquinaId() {
   try {
     let id = localStorage.getItem(MAQUINA_KEY);
@@ -1991,11 +2242,36 @@ function maquinaId() {
   } catch { return "PC-SEM-ID"; }
 }
 
-function ultimoOperador() {
-  try { return (JSON.parse(localStorage.getItem(OPERADOR_KEY) || "null") || {}).nome || ""; } catch { return ""; }
+function salvarSessao(sessao, usuario) {
+  state.sessao = sessao;
+  aplicarUsuario(usuario);
+  try { localStorage.setItem(SESSAO_KEY, JSON.stringify({ sessao, usuario, dia: todayKey() })); } catch {}
 }
 
-function mostrarOperador() {
+function sessaoGuardada() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSAO_KEY) || "null");
+    if (s && s.sessao && s.dia === todayKey()) return s;
+  } catch {}
+  return null;
+}
+
+function aplicarUsuario(usuario) {
+  if (!usuario) return;
+  state.user = usuario;
+  document.body.dataset.perfil = usuario.perfil || "programador";
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSAO_KEY) || "null");
+    if (s && s.sessao === state.sessao) localStorage.setItem(SESSAO_KEY, JSON.stringify(Object.assign(s, { usuario })));
+  } catch {}
+  mostrarUsuario();
+}
+
+function podeSubirBase() {
+  return !!state.user && (state.user.perfil === "admin" || state.user.perfil === "gestao");
+}
+
+function mostrarUsuario() {
   let chip = document.getElementById("operadorChip");
   if (!chip) {
     chip = document.createElement("div");
@@ -2003,21 +2279,188 @@ function mostrarOperador() {
     chip.className = "operador-chip";
     document.body.appendChild(chip);
   }
-  const nome = operadorDoDia();
-  chip.hidden = !nome;
-  chip.innerHTML = nome ? `Operador: <strong>${esc(nome)}</strong> <button type="button" id="operadorTrocar">Trocar</button>` : "";
-  const trocar = document.getElementById("operadorTrocar");
-  if (trocar) trocar.addEventListener("click", () => abrirOperador(null, true, "Troca de operador"));
+  const u = state.user;
+  chip.hidden = !u;
+  if (!u) return;
+  chip.innerHTML = `👤 <strong>${esc(u.nome)}</strong> <span class="chip-perfil">${esc(PERFIL_LABEL[u.perfil] || u.perfil)}</span>`
+    + (u.perfil === "admin" ? ` <button type="button" id="chipUsuarios">Usuários</button>` : "")
+    + ` <button type="button" id="chipSenha">Trocar senha</button> <button type="button" id="chipSair">Sair</button>`;
+  on(document.getElementById("chipUsuarios"), "click", abrirUsuarios);
+  on(document.getElementById("chipSenha"), "click", () => abrirTrocaSenha(false));
+  on(document.getElementById("chipSair"), "click", sair);
 }
 
-function operadorDoDia() {
-  try {
-    const s = JSON.parse(localStorage.getItem(OPERADOR_KEY) || "null");
-    if (s && s.dia === todayKey() && s.nome) return s.nome;
-  } catch {}
-  return "";
+function mostrarModal(id, show) {
+  const m = document.getElementById(id);
+  if (m) m.hidden = !show;
 }
 
+function abrirLogin(msg) {
+  const erro = document.getElementById("loginErro");
+  erro.textContent = msg || "";
+  erro.hidden = !msg;
+  mostrarModal("loginModal", true);
+  setTimeout(() => {
+    const u = document.getElementById("loginUsuario");
+    (u.value ? document.getElementById("loginSenha") : u).focus();
+  }, 50);
+}
+
+async function entrar(event) {
+  event.preventDefault();
+  const usuario = normalize(document.getElementById("loginUsuario").value).toLowerCase();
+  const senhaEl = document.getElementById("loginSenha");
+  const botao = document.getElementById("loginEntrar");
+  const erro = document.getElementById("loginErro");
+  if (!usuario || !senhaEl.value) return;
+  botao.disabled = true;
+  botao.textContent = "Entrando...";
+  const result = await callSheets({ action: "login", usuario, senha: senhaEl.value, maquina: maquinaId() });
+  botao.disabled = false;
+  botao.textContent = "Entrar";
+  if (!result || !result.ok) {
+    erro.textContent = (result && result.error) || "Não consegui entrar.";
+    erro.hidden = false;
+    senhaEl.select();
+    return;
+  }
+  senhaEl.value = "";
+  mostrarModal("loginModal", false);
+  salvarSessao(result.sessao, result.usuario);
+  if (result.usuario && result.usuario.trocarSenha) { abrirTrocaSenha(true); return; }
+  comecar();
+}
+
+function comecar() {
+  mostrarUsuario();
+  if (painelIniciado) { refreshFromSheets(true); return; }
+  painelIniciado = true;
+  iniciarPainel();
+}
+
+function sessaoExpirada(msg) {
+  try { localStorage.removeItem(SESSAO_KEY); } catch {}
+  state.sessao = "";
+  state.user = null;
+  mostrarUsuario();
+  abrirLogin("Sua sessão terminou (fim do dia, senha resetada ou acesso alterado). Entre de novo.");
+}
+
+function sair() {
+  if (!confirm("Sair do painel neste computador?")) return;
+  try { localStorage.removeItem(SESSAO_KEY); } catch {}
+  location.reload();
+}
+
+let trocaObrigatoria = false;
+function abrirTrocaSenha(obrigatoria) {
+  trocaObrigatoria = !!obrigatoria;
+  document.getElementById("senhaAviso").textContent = obrigatoria
+    ? "Primeiro acesso (ou senha resetada): crie a sua senha pessoal para continuar."
+    : "Escolha uma nova senha (mínimo 6 caracteres).";
+  document.getElementById("senhaCancelar").hidden = trocaObrigatoria;
+  document.getElementById("senhaErro").hidden = true;
+  ["senhaAtual", "senhaNova", "senhaConfirma"].forEach((id) => { document.getElementById(id).value = ""; });
+  mostrarModal("senhaModal", true);
+  setTimeout(() => document.getElementById("senhaAtual").focus(), 50);
+}
+
+async function salvarNovaSenha(event) {
+  event.preventDefault();
+  const atual = document.getElementById("senhaAtual").value;
+  const nova = document.getElementById("senhaNova").value;
+  const conf = document.getElementById("senhaConfirma").value;
+  const erro = document.getElementById("senhaErro");
+  const falha = (m) => { erro.textContent = m; erro.hidden = false; };
+  if (nova.length < 6) return falha("A nova senha precisa ter pelo menos 6 caracteres.");
+  if (nova !== conf) return falha("A confirmação não bate com a nova senha.");
+  const result = await callSheets({ action: "trocarSenha", senhaAtual: atual, senhaNova: nova });
+  if (!result || !result.ok) return falha((result && result.error) || "Não consegui trocar a senha.");
+  salvarSessao(result.sessao, result.usuario);
+  mostrarModal("senhaModal", false);
+  setNotice("Senha alterada ✓", "ok");
+  if (trocaObrigatoria) comecar();
+}
+
+// ----- Administração de usuários (só perfil admin) -----
+let listaUsuarios = [];
+async function abrirUsuarios() {
+  mostrarModal("usuariosModal", true);
+  avisoUsuarios("Carregando usuários...");
+  const result = await callSheets({ action: "usuarios" });
+  if (!result || !result.ok) return avisoUsuarios((result && result.error) || "Não consegui carregar.", true);
+  listaUsuarios = result.usuarios || [];
+  avisoUsuarios("");
+  desenharUsuarios();
+}
+
+function avisoUsuarios(msg, erro, senha) {
+  const box = document.getElementById("usuariosAviso");
+  box.hidden = !msg;
+  box.className = "usuarios-aviso" + (erro ? " erro" : senha ? " senha" : "");
+  box.innerHTML = msg;
+}
+
+function opcoesPerfil(atual) {
+  return Object.keys(PERFIL_LABEL).map((p) => `<option value="${p}"${p === atual ? " selected" : ""}>${esc(PERFIL_LABEL[p])}</option>`).join("");
+}
+
+function desenharUsuarios() {
+  const body = document.getElementById("usuariosBody");
+  body.innerHTML = listaUsuarios.map((u) => `
+    <tr data-usuario="${esc(u.usuario)}">
+      <td><strong>${esc(u.usuario)}</strong>${u.trocarSenha ? `<br><small class="muted">senha provisória</small>` : ""}</td>
+      <td><input class="u-nome" value="${esc(u.nome)}" maxlength="60"></td>
+      <td><select class="u-perfil">${opcoesPerfil(u.perfil)}</select></td>
+      <td style="text-align:center"><input class="u-ativo" type="checkbox"${u.ativo ? " checked" : ""}></td>
+      <td><small>${u.ultimoAcesso ? esc(new Date(u.ultimoAcesso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })) : "nunca"}</small></td>
+      <td class="u-acoes"><button type="button" class="button u-salvar">Salvar</button><button type="button" class="button u-reset">Resetar senha</button></td>
+    </tr>`).join("") || `<tr><td colspan="6">Nenhum usuário.</td></tr>`;
+}
+
+async function acaoUsuario(event) {
+  const tr = event.target.closest("tr[data-usuario]");
+  if (!tr) return;
+  const usuario = tr.getAttribute("data-usuario");
+  if (event.target.classList.contains("u-salvar")) {
+    const dados = {
+      usuario,
+      nome: tr.querySelector(".u-nome").value,
+      perfil: tr.querySelector(".u-perfil").value,
+      ativo: tr.querySelector(".u-ativo").checked,
+    };
+    const result = await callSheets({ action: "salvarUsuario", dados });
+    if (!result || !result.ok) return avisoUsuarios(esc((result && result.error) || "Não consegui salvar."), true);
+    listaUsuarios = result.usuarios || listaUsuarios;
+    desenharUsuarios();
+    avisoUsuarios(`Usuário <strong>${esc(usuario)}</strong> atualizado ✓`);
+  } else if (event.target.classList.contains("u-reset")) {
+    if (!confirm(`Gerar uma senha provisória nova para ${usuario}? A senha atual deixa de funcionar.`)) return;
+    const result = await callSheets({ action: "resetarSenha", usuario });
+    if (!result || !result.ok) return avisoUsuarios(esc((result && result.error) || "Não consegui resetar."), true);
+    listaUsuarios = result.usuarios || listaUsuarios;
+    desenharUsuarios();
+    avisoUsuarios(`Senha provisória de <strong>${esc(usuario)}</strong>: <code>${esc(result.senhaTemporaria)}</code> — passe para a pessoa; no 1º acesso ela cria a própria senha.`, false, true);
+  }
+}
+
+async function criarUsuario(event) {
+  event.preventDefault();
+  const dados = {
+    novo: true,
+    usuario: normalize(document.getElementById("novoUsuario").value).toLowerCase(),
+    nome: document.getElementById("novoNome").value,
+    perfil: document.getElementById("novoPerfil").value,
+  };
+  const result = await callSheets({ action: "salvarUsuario", dados });
+  if (!result || !result.ok) return avisoUsuarios(esc((result && result.error) || "Não consegui criar."), true);
+  listaUsuarios = result.usuarios || listaUsuarios;
+  desenharUsuarios();
+  event.target.reset();
+  avisoUsuarios(`Usuário <strong>${esc(dados.usuario)}</strong> criado. Senha provisória: <code>${esc(result.senhaTemporaria)}</code> — passe para a pessoa; no 1º acesso ela cria a própria senha.`, false, true);
+}
+
+// ===== "Vou tratar": quem pegou cada EXOC no dia =====
 function claimCell(record) {
   const c = state.claims && state.claims[record.key];
   if (c) {
@@ -2030,82 +2473,51 @@ function claimCell(record) {
   return `<button type="button" class="button claim-btn" data-claim="${esc(record.key)}">Vou tratar</button>`;
 }
 
-let _claimPendente = null;
-let _tipoAcesso = "Abertura";
-function abrirOperador(cb, podeCancelar, tipo) {
-  _claimPendente = cb;
-  _tipoAcesso = tipo || "Abertura";
-  const modal = document.getElementById("operadorModal");
-  const input = document.getElementById("operadorNome");
-  input.value = ultimoOperador(); // sugere o de ontem: se for a mesma pessoa, e so confirmar
-  document.getElementById("operadorCancelar").hidden = !podeCancelar;
-  modal.hidden = false;
-  setTimeout(() => { input.focus(); input.select(); }, 50);
-}
-
-function pedirOperador(cb) {
-  const nome = operadorDoDia();
-  if (nome) { cb(nome); return; }
-  abrirOperador(cb, true, "Abertura");
-}
-
-function registrarAcesso(nome, tipo) {
-  callSheets({ action: "access", access: { nome, maquina: maquinaId(), tipo: tipo || "Abertura" } });
-}
-
-// ao abrir o painel: 1a vez no dia neste PC pergunta quem e; depois so registra o acesso
-function iniciarOperador() {
-  const nome = operadorDoDia();
-  if (nome) { registrarAcesso(nome, "Abertura"); mostrarOperador(); return; }
-  abrirOperador(null, false, "Abertura");
-}
-
-function confirmarOperador(event) {
-  if (event) event.preventDefault();
-  const input = document.getElementById("operadorNome");
-  const nome = normalize(input.value).replace(/\s+/g, " ");
-  if (nome.length < 3) { input.focus(); return; }
-  try { localStorage.setItem(OPERADOR_KEY, JSON.stringify({ nome, dia: todayKey() })); } catch {}
-  document.getElementById("operadorModal").hidden = true;
-  registrarAcesso(nome, _tipoAcesso);
-  mostrarOperador();
-  const cb = _claimPendente; _claimPendente = null;
-  if (cb) cb(nome);
-}
-
-function fecharOperador() {
-  _claimPendente = null;
-  document.getElementById("operadorModal").hidden = true;
-}
-
 async function vouTratar(button) {
   const key = button.getAttribute("data-claim");
-  const record = (state.records || state.baseline || []).find((r) => r.key === key) || {};
-  pedirOperador(async (nome) => {
-    button.disabled = true;
-    button.textContent = "Salvando...";
-    const result = await callSheets({
-      action: "claim",
-      claim: { key, nome, maquina: maquinaId(), solicitacao: record.solicitacao || "", ligacao: record.ligacao || "", servico: record.servico || "" },
-    });
-    if (result && result.ok) {
-      state.claims = result.claims || Object.assign({}, state.claims, { [key]: result.claim });
-      if (result.already && result.claim && result.claim.nome !== nome) {
-        setNotice(`Essa EXOC já está com ${result.claim.nome} desde ${result.claim.hora}.`, "error");
-      }
-      renderTable(state.lastTableRecords || []);
-    } else {
-      button.disabled = false;
-      button.textContent = "Vou tratar";
-      setNotice("Não consegui registrar: " + ((result && result.error) || "erro desconhecido") + ". Tente de novo.", "error");
-    }
+  const record = (state.records || []).concat(state.repavRecords || []).find((r) => r.key === key) || {};
+  if (!state.user) { abrirLogin(); return; }
+  button.disabled = true;
+  button.textContent = "Salvando...";
+  const result = await callSheets({
+    action: "claim",
+    claim: { key, maquina: maquinaId(), solicitacao: record.solicitacao || "", ligacao: record.ligacao || "", servico: record.servico || "" },
   });
+  if (result && result.ok) {
+    state.claims = result.claims || Object.assign({}, state.claims, { [key]: result.claim });
+    if (result.already && result.claim && result.claim.usuario !== state.user.usuario) {
+      setNotice(`Essa EXOC já está com ${result.claim.nome} desde ${result.claim.hora}.`, "error");
+    }
+    renderTable(state.lastTableRecords || []);
+    const repavBody = document.getElementById("repavBody");
+    if (repavBody && state.lastRepavRecords) renderTable(state.lastRepavRecords, repavBody, false);
+  } else if (!result || result.auth !== false) {
+    button.disabled = false;
+    button.textContent = "Vou tratar";
+    setNotice("Não consegui registrar: " + ((result && result.error) || "erro desconhecido") + ". Tente de novo.", "error");
+  }
 }
 
-els.body.addEventListener("click", (event) => {
+function cliqueTratar(event) {
   const button = event.target.closest("[data-claim]");
   if (button && !button.disabled) vouTratar(button);
-});
-document.getElementById("operadorForm").addEventListener("submit", confirmarOperador);
-document.getElementById("operadorCancelar").addEventListener("click", fecharOperador);
-iniciarOperador();
+}
+els.body.addEventListener("click", cliqueTratar);
+on(document.getElementById("repavBody"), "click", cliqueTratar);
+on(document.getElementById("loginForm"), "submit", entrar);
+on(document.getElementById("senhaForm"), "submit", salvarNovaSenha);
+on(document.getElementById("senhaCancelar"), "click", () => mostrarModal("senhaModal", false));
+on(document.getElementById("usuariosFechar"), "click", () => mostrarModal("usuariosModal", false));
+on(document.getElementById("usuariosBody"), "click", acaoUsuario);
+on(document.getElementById("novoUsuarioForm"), "submit", criarUsuario);
+
+// início: se já entrou hoje neste computador, segue direto; senão pede login
+(function iniciarSessao() {
+  const s = sessaoGuardada();
+  if (!s) { abrirLogin(); setNotice("Entre com seu usuário e senha para ver o painel."); return; }
+  state.sessao = s.sessao;
+  aplicarUsuario(s.usuario);
+  callSheets({ action: "access", access: { maquina: maquinaId(), tipo: "Abertura" } });
+  if (s.usuario && s.usuario.trocarSenha) { abrirTrocaSenha(true); return; }
+  comecar();
+})();
