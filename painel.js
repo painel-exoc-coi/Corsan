@@ -2412,6 +2412,7 @@ function opcoesPerfil(atual) {
 }
 
 function desenharUsuarios() {
+  usuariosCache = null;
   const body = document.getElementById("usuariosBody");
   body.innerHTML = listaUsuarios.map((u) => `
     <tr data-usuario="${esc(u.usuario)}">
@@ -2471,12 +2472,67 @@ function claimCell(record) {
   const c = state.claims && state.claims[record.key];
   if (c) {
     return record.appearsLatest
-      ? `<span class="claim-tag">Em tratamento por <strong>${esc(c.nome)}</strong>, ${esc(c.hora)}</span>`
-      : `<span class="claim-tag done">Tratada por <strong>${esc(c.nome)}</strong></span>`;
+      ? `<span class="claim-tag">Em tratamento por <strong>${esc(c.nome)}</strong>, ${esc(c.hora)}</span>` + botaoEditarTratativa(record)
+      : `<span class="claim-tag done">Tratada por <strong>${esc(c.nome)}</strong></span>` + botaoEditarTratativa(record);
   }
-  if (!record.appearsLatest) return "—";
+  if (!record.appearsLatest) return "—" + botaoEditarTratativa(record);
   if (state.baselineDay && state.baselineDay !== todayKey()) return "—";
-  return `<button type="button" class="button claim-btn" data-claim="${esc(record.key)}">Vou tratar</button>`;
+  return `<button type="button" class="button claim-btn" data-claim="${esc(record.key)}">Vou tratar</button>` + botaoEditarTratativa(record);
+}
+
+// ===== Admin: trocar / colocar / remover quem tratou (só perfil admin, só no dia de hoje) =====
+function botaoEditarTratativa(record) {
+  if (!state.user || state.user.perfil !== "admin") return "";
+  if (state.baselineDay && state.baselineDay !== todayKey()) return "";
+  return ` <button type="button" class="claim-edit" data-edit="${esc(record.key)}" title="Alterar quem tratou (admin)" style="border:0;background:#eef2ff;border-radius:6px;padding:3px 6px;cursor:pointer;font-size:12px">✏️</button>`;
+}
+
+let usuariosCache = null;
+async function abrirEditarTratativa(key) {
+  const record = (state.records || []).concat(state.repavRecords || []).find((r) => r.key === key) || {};
+  if (!usuariosCache) {
+    setNotice("Carregando usuários...");
+    const result = await callSheets({ action: "usuarios" });
+    if (!result || !result.ok) { setNotice("Não consegui carregar os usuários: " + ((result && result.error) || "erro"), "error"); return; }
+    usuariosCache = (result.usuarios || []).filter((u) => u.ativo);
+    setNotice("");
+  }
+  let modal = document.getElementById("tratativaModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "tratativaModal";
+    modal.className = "operador-modal";
+    document.body.appendChild(modal);
+  }
+  const atual = state.claims && state.claims[key];
+  const opcoes = usuariosCache.map((u) => `<option value="${esc(u.usuario)}"${atual && atual.usuario === u.usuario ? " selected" : ""}>${esc(u.nome)} (${esc(u.usuario)})</option>`).join("");
+  modal.innerHTML = `
+    <form class="operador-box" id="tratativaForm">
+      <h3>Quem tratou esta EXOC?</h3>
+      <p>Solicitação <strong>${esc(record.solicitacao || "")}</strong> · Ligação ${esc(record.ligacao || "")}<br>${esc(record.servico || "")}</p>
+      <p>Atual: <strong>${atual ? esc(atual.nome) + " (" + esc(atual.hora) + ")" : "ninguém sinalizou"}</strong></p>
+      <label for="tratativaUsuario">Colocar no nome de</label>
+      <select id="tratativaUsuario" style="padding:10px 12px;border:1px solid #c9d2e3;border-radius:8px;font-size:15px">${opcoes}</select>
+      <div class="operador-acoes">
+        ${atual ? `<button type="button" class="button danger-button" id="tratativaRemover">Remover</button>` : ""}
+        <button type="button" class="button" id="tratativaCancelar">Cancelar</button>
+        <button type="submit" class="button primary">Salvar</button>
+      </div>
+    </form>`;
+  modal.hidden = false;
+  const salvar = async (usuario) => {
+    const result = await callSheets({ action: "definirTratativa", key, usuario });
+    if (!result || !result.ok) { setNotice("Não consegui alterar: " + ((result && result.error) || "erro desconhecido"), "error"); return; }
+    state.claims = result.claims || {};
+    modal.hidden = true;
+    renderTable(state.lastTableRecords || []);
+    const repavBody = document.getElementById("repavBody");
+    if (repavBody && state.lastRepavRecords) renderTable(state.lastRepavRecords, repavBody, false);
+    setNotice(usuario ? "Tratativa atualizada ✓" : "Tratativa removida ✓", "ok");
+  };
+  document.getElementById("tratativaForm").addEventListener("submit", (e) => { e.preventDefault(); salvar(document.getElementById("tratativaUsuario").value); });
+  document.getElementById("tratativaCancelar").addEventListener("click", () => { modal.hidden = true; });
+  on(document.getElementById("tratativaRemover"), "click", () => { if (confirm("Remover quem estava nesta EXOC?")) salvar(""); });
 }
 
 async function vouTratar(button) {
@@ -2505,6 +2561,8 @@ async function vouTratar(button) {
 }
 
 function cliqueTratar(event) {
+  const edit = event.target.closest("[data-edit]");
+  if (edit) { abrirEditarTratativa(edit.getAttribute("data-edit")); return; }
   const button = event.target.closest("[data-claim]");
   if (button && !button.disabled) vouTratar(button);
 }
