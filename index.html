@@ -4,9 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Painel EXOC Corsan</title>
-    <meta name="description" content="Painel para acompanhar EXOCs a partir de umfa base inicial fixa e novas bases enviadas durante o dia." />
+    <meta name="description" content="Painel para acompanhar EXOCs a partir de uma base inicial fixa e novas bases enviadas durante o dia." />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cpath d='M16 18h32v6H16zM16 29h23v6H16zM16 40h32v6H16z' fill='%23e2e8f0'/%3E%3Ccircle cx='48' cy='32' r='8' fill='%2322c55e'/%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="painel.css?v=20261105b" />
+    <link rel="stylesheet" href="painel.css?v=20261110a" />
     <script>
       window.addEventListener("error", function (event) {
         var box = document.querySelector("#loadNotice");
@@ -32,21 +32,21 @@
 
       <section class="dashboard-frame">
         <div class="top-actions">
-          <label class="button primary">
+          <label class="button primary so-gestao">
             <input id="baselineFile" type="file" accept=".xlsx,.xls,.xlsb,.csv" />
             Carregar base inicial
           </label>
-          <label class="button primary">
+          <label class="button primary so-gestao">
             <input id="latestFile" type="file" accept=".xlsx,.xls,.xlsb,.csv" />
             Subir nova base
           </label>
-          <label class="button">
+          <label class="button so-gestao">
             <input id="stateFile" type="file" accept=".json" />
             Importar acompanhamento
           </label>
-          <button id="exportState" class="button" type="button">Exportar acompanhamento</button>
-          <button id="exportCsv" class="button" type="button">Gerar base tratada</button>
-          <button id="clearData" class="button danger-button" type="button">Limpar dados</button>
+          <button id="exportState" class="button so-gestao" type="button">Exportar acompanhamento</button>
+          <button id="exportCsv" class="button so-gestao" type="button">Gerar base tratada</button>
+          <button id="clearData" class="button danger-button so-gestao" type="button">Limpar dados</button>
         </div>
 
       <section class="notice" id="loadNotice">
@@ -123,6 +123,14 @@
               <option value="todos">Todos</option>
             </select>
           </div>
+          <div class="field so-meta">
+            <label for="entradaFilter">Entrada</label>
+            <select id="entradaFilter" multiple>
+              <option value="todos">Todas</option>
+              <option value="nova">Novas (contam na meta)</option>
+              <option value="repetida">Repetidas</option>
+            </select>
+          </div>
           <div class="field">
             <label for="servicoFilter">Serviço</label>
             <select id="servicoFilter" multiple>
@@ -145,8 +153,10 @@
             </div>
             <div class="segmented" role="group" aria-label="Visualização">
               <button id="viewTable" type="button" class="active">Diário</button>
+              <button id="viewDia" type="button">Tratativa do dia</button>
               <button id="viewMonthly" type="button">Mensal 24h</button>
               <button id="viewCharts" type="button">Dinâmica</button>
+              <button id="viewRepav" type="button">REPAV</button>
             </div>
           </div>
 
@@ -168,6 +178,7 @@
                   <th>Grupo de servico</th>
                   <th>Ocorrência</th>
                   <th>Visitado em</th>
+                  <th>Entrada</th>
                   <th>Prazo 24h</th>
                   <th>Última base</th>
                   <th>Tratamento</th>
@@ -209,7 +220,7 @@
               <button id="monthExportSummary" class="button primary" type="button">Extrair unificado (por dia)</button>
               <button id="monthExportDetail" class="button" type="button">Extrair analítico (por EXOC)</button>
             </div>
-            <div class="month-toolbar past-base">
+            <div class="month-toolbar past-base so-gestao">
               <div class="field">
                 <label for="pastDay">Dia da base fixa</label>
                 <input id="pastDay" type="date" />
@@ -220,7 +231,7 @@
               </label>
               <span class="past-hint">Use para dias anteriores: escolha a data e suba a base extraída pela manhã daquele dia. Substitui a base fixa salva nesse dia.</span>
             </div>
-            <div class="month-toolbar past-base">
+            <div class="month-toolbar past-base so-gestao">
               <label class="button" id="monthImportLabel">
                 <input id="monthImportFile" type="file" accept=".xlsx,.xls,.xlsb" />
                 Importar mês inteiro (base já tratada)
@@ -228,24 +239,24 @@
               <span class="past-hint">Um arquivo só com o mês todo: cada dia da coluna <strong>data</strong> vira a base fixa daquele dia e o resultado vem da coluna <strong>Meta</strong> (dentro/fora do prazo). Substitui os dias que já existirem.</span>
             </div>
             <div class="monthly-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
-              <article><span>Volumetria do mês (bases fixas)</span><strong id="monthEligible">0</strong></article>
+              <article><span>Volumetria da meta (O.S. novas)</span><strong id="monthEligible">0</strong></article>
               <article><span>Tratadas dentro da meta</span><strong id="monthTreated">0</strong></article>
               <article><span>Fora da meta</span><strong id="monthPending">0</strong></article>
               <article><span>Em andamento (dia aberto)</span><strong id="monthWaiting">0</strong></article>
               <article><span>Resultado do mês</span><strong id="monthRate">0%</strong></article>
             </div>
-            <p class="notice" style="margin:10px 0">Cada dia usa a <strong>base fixa da manhã</strong> (a 1ª do dia), já tratada, com as vencidas e as que ainda não venceram. Dentro da meta = saiu até a base fixa do dia seguinte. Fora da meta = continuou na base do dia seguinte (não tratada de um dia para o outro). O dia de hoje fica <em>em andamento</em> e só entra no resultado quando a próxima base fixa chegar. Respeita os filtros Diretoria, Micro e Grupo de serviço.</p>
+            <p class="notice" style="margin:10px 0"><strong>Regra da meta:</strong> só conta a O.S. <strong>nova</strong> — a 1ª vez que ela aparece numa base fixa da manhã. <strong>Dentro da meta</strong> = saiu até a base fixa do dia seguinte. <strong>Fora da meta</strong> = ainda estava na base fixa do dia seguinte. Se a O.S. voltar em outro dia (retorno de campo ou pendente), ela aparece no Diário para tratar, mas <strong>não entra de novo</strong> na volumetria. O dia de hoje fica <em>em andamento</em> até a próxima base fixa. Respeita os filtros Diretoria, Micro e Grupo de serviço.</p>
             <div class="table-wrap compact">
               <table>
                 <thead>
                   <tr>
                     <th>Dia</th>
-                    <th>Base fixa</th>
-                    <th>Novas no dia</th>
-                    <th>Vindas de dias anteriores</th>
-                    <th>Já vencidas na extração</th>
+                    <th>Base fixa (total na tela)</th>
+                    <th>Novas no dia (meta)</th>
+                    <th>Repetidas (fora da conta)</th>
+                    <th>Novas já vencidas na extração</th>
                     <th>Tratadas na meta</th>
-                    <th>Não tratadas → dia seguinte</th>
+                    <th>Fora da meta</th>
                     <th>% na meta</th>
                     <th>Situação do dia</th>
                   </tr>
@@ -254,6 +265,48 @@
               </table>
             </div>
           </div>
+          <div id="diaView" class="dia-view hidden">
+            <p class="notice dia-nota">Visão do dia sobre a <strong>base fixa da manhã</strong>. <strong>Novas</strong> = O.S. que apareceram pela 1ª vez (são as que contam na meta). <strong>Repetidas</strong> = já tinham aparecido antes (retorno de campo ou pendentes). Ranking: quem zera primeiro fica na frente e não perde a posição.</p>
+            <div id="diaGrid" class="dia-grid"></div>
+          </div>
+
+          <div id="repavView" class="repav-view hidden">
+            <p class="notice repav-nota">EXOCs de responsabilidade da <strong>REPAVIMENTAÇÃO</strong>. Mesmo tratamento das do COI (base fixa da manhã + atualizações), mas <strong>não entram na meta</strong>.</p>
+            <p class="notice error" id="repavAviso" hidden>A última atualização foi enviada antes desta versão do painel, por isso ainda não dá para saber quais REPAV saíram. Na próxima base enviada isso já aparece.</p>
+            <div class="monthly-grid repav-cards">
+              <article><span>Volumetria REPAV</span><strong id="repavTotal">0</strong></article>
+              <article><span>Tratadas</span><strong id="repavTratadas">0</strong></article>
+              <article><span>Não tratadas</span><strong id="repavAbertas">0</strong></article>
+              <article><span>Progresso</span><strong id="repavPct">0%</strong></article>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 8px">
+              <button id="repavExportCsv" class="button" type="button">Exportar REPAV (CSV)</button>
+              <button id="repavExportXlsx" class="button" type="button">Exportar REPAV (XLSX)</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>RESPONSAVEL</th>
+                    <th>Diretoria</th>
+                    <th>Micro</th>
+                    <th>Nº Solicitação</th>
+                    <th>Nº Ligação</th>
+                    <th>Localidade</th>
+                    <th>Serviço</th>
+                    <th>Grupo de servico</th>
+                    <th>Ocorrência</th>
+                    <th>Visitado em</th>
+                    <th>Prazo 24h</th>
+                    <th>Última base</th>
+                    <th>Tratamento</th>
+                  </tr>
+                </thead>
+                <tbody id="repavBody"></tbody>
+              </table>
+            </div>
+          </div>
+
           <div id="chartView" class="charts hidden">
             <div class="pivot-controls">
               <div class="field">
@@ -323,21 +376,73 @@
       </div>
     </main>
 
-    <div id="operadorModal" class="operador-modal" hidden>
-      <form id="operadorForm" class="operador-box">
-        <h3>Quem está tratando hoje?</h3>
-        <p>Confirme quem está usando este computador hoje. Vale até o fim do dia.</p>
-        <label for="operadorNome">Seu nome</label>
-        <input id="operadorNome" type="text" autocomplete="name" maxlength="60" required>
+    <div id="loginModal" class="operador-modal" hidden>
+      <form id="loginForm" class="operador-box" autocomplete="on">
+        <img class="login-logo" src="logo-corsan-aegea.png" alt="Corsan Aegea" />
+        <h3>Painel EXOC — entrar</h3>
+        <p>Use o seu usuário e senha. Não passe a sua senha para outra pessoa: o "Vou tratar" fica no seu nome.</p>
+        <label for="loginUsuario">Usuário</label>
+        <input id="loginUsuario" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="30" required>
+        <label for="loginSenha">Senha</label>
+        <input id="loginSenha" type="password" autocomplete="current-password" required>
+        <p id="loginErro" class="form-erro" hidden></p>
+        <p class="login-dica">Esqueceu a senha? Peça para o líder resetar.</p>
         <div class="operador-acoes">
-          <button id="operadorCancelar" type="button" class="button">Cancelar</button>
-          <button type="submit" class="button primary">Confirmar</button>
+          <button id="loginEntrar" type="submit" class="button primary">Entrar</button>
         </div>
       </form>
     </div>
+
+    <div id="senhaModal" class="operador-modal" hidden>
+      <form id="senhaForm" class="operador-box">
+        <h3>Trocar senha</h3>
+        <p id="senhaAviso"></p>
+        <label for="senhaAtual">Senha atual (ou a provisória)</label>
+        <input id="senhaAtual" type="password" autocomplete="current-password" required>
+        <label for="senhaNova">Nova senha</label>
+        <input id="senhaNova" type="password" autocomplete="new-password" minlength="6" required>
+        <label for="senhaConfirma">Repita a nova senha</label>
+        <input id="senhaConfirma" type="password" autocomplete="new-password" minlength="6" required>
+        <p id="senhaErro" class="form-erro" hidden></p>
+        <div class="operador-acoes">
+          <button id="senhaCancelar" type="button" class="button">Cancelar</button>
+          <button type="submit" class="button primary">Salvar senha</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="usuariosModal" class="operador-modal" hidden>
+      <div class="operador-box usuarios-box">
+        <div class="usuarios-topo">
+          <h3>Usuários do painel</h3>
+          <button id="usuariosFechar" type="button" class="button">Fechar</button>
+        </div>
+        <p><strong>Administrador</strong>: tudo + gerencia usuários · <strong>Analista</strong>: sobe bases · <strong>Programador</strong>: vê o painel e usa o "Vou tratar". Desmarcar "Ativo" bloqueia o acesso na hora.</p>
+        <div id="usuariosAviso" class="usuarios-aviso" hidden></div>
+        <form id="novoUsuarioForm" class="novo-usuario">
+          <input id="novoUsuario" placeholder="usuário (ex.: joao.silva)" maxlength="30" autocapitalize="none" spellcheck="false" required>
+          <input id="novoNome" placeholder="Nome que aparece no painel" maxlength="60" required>
+          <select id="novoPerfil">
+            <option value="programador">Programador</option>
+            <option value="gestao">Analista (sobe bases)</option>
+            <option value="admin">Administrador</option>
+          </select>
+          <button type="submit" class="button primary">Criar usuário</button>
+        </form>
+        <div class="table-wrap usuarios-tabela">
+          <table>
+            <thead>
+              <tr><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Ativo</th><th>Último acesso</th><th></th></tr>
+            </thead>
+            <tbody id="usuariosBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <script src="config.js?v=20261017b"></script>
     <script src="auxiliares.js?v=20261017b"></script>
     <script src="grupos-servico.js?v=20261017b"></script>
-    <script src="painel.js?v=20261105b"></script>
+    <script src="painel.js?v=20261110a"></script>
   </body>
 </html>
