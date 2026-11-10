@@ -474,24 +474,33 @@ function applyBusinessRules(rows, referenceDay) {
         responsavel: svcResp,
         responsabilidade: svcResp,
         procxCoi: svcResp,
+        respBase: record.procxCoi, // responsabilidade que veio na própria base (se tiver a coluna)
         _semTabela: !svcResp,
         afetaCliente: serviceInfo.afetaCliente || "",
         grupoServico: serviceGroupFor(code || record.servico),
       });
     });
-  const f = { semData: 0, outroAno: 0, hoje: 0, semCoi: 0, semTabela: 0, repav: 0, naoEncerrada: 0, semSituacao: !hasSituacao, diaBase: currentDay };
+  const f = { semData: 0, outroAno: 0, hoje: 0, semCoi: 0, semTabela: 0, repav: 0, repavForaData: 0, naoEncerrada: 0, semSituacao: !hasSituacao, diaBase: currentDay };
   const repav = [];
   const out = enrichedRows.filter((record) => {
     // Tratamento oficial (só 2 regras):
     // 1) "Visitado em": sai 2025 (ou antes) e o dia da base em diante
     // 2) só responsabilidade COI pela tabela auxiliar (código do serviço)
+    // REPAVIMENTAÇÃO: pela tabela auxiliar OU pela coluna de responsabilidade da própria base
+    // (quando a tabela não diz COI). Sai da meta, mas fica guardada para a aba REPAVIMENTAÇÃO.
+    const ehRepav = isRepav(record.procxCoi) || (isRepav(record.respBase) && normKey(record.procxCoi) !== "COI");
     const date = record.visitadoEmMs ? new Date(record.visitadoEmMs) : null;
+    let foraData = false;
     if (!date) f.semData += 1; // sem data em "Visitado em": fica (não é filtrada)
-    else if (date.getFullYear() <= 2025) { f.outroAno += 1; return false; }
-    else if (dateKeyFromMs(record.visitadoEmMs) >= currentDay) { f.hoje += 1; return false; }
+    else if (date.getFullYear() <= 2025) { f.outroAno += 1; foraData = true; }
+    else if (dateKeyFromMs(record.visitadoEmMs) >= currentDay) { f.hoje += 1; foraData = true; }
+    if (foraData) { if (ehRepav) f.repavForaData += 1; return false; }
+    if (ehRepav) {
+      f.repav += 1;
+      repav.push(Object.assign(record, { procxCoi: "REPAVIMENTAÇÃO", responsavel: "REPAVIMENTAÇÃO", responsabilidade: "REPAVIMENTAÇÃO" }));
+      return false;
+    }
     if (record._semTabela) { f.semTabela += 1; return false; }
-    // REPAVIMENTAÇÃO: sai da meta, mas fica guardada para a aba REPAV
-    if (isRepav(record.procxCoi)) { f.repav += 1; repav.push(record); return false; }
     if (normKey(record.procxCoi) !== "COI") { f.semCoi += 1; return false; }
     return true;
   });
@@ -1044,9 +1053,10 @@ function renderSummary(records) {
         + ` − ${number(f.outroAno)} visitadas em 2025`
         + ` − ${number(f.hoje)} visitadas no dia da base${f.diaBase ? ` (${f.diaBase.slice(8)}/${f.diaBase.slice(5, 7)})` : ""} ou depois`
         + ` − ${number(f.semTabela || 0)} com código fora da tabela auxiliar`
-        + (f.repav ? ` − ${number(f.repav)} da REPAVIMENTAÇÃO (vão para a aba REPAV, fora da meta)` : "")
+        + ` − ${number(f.repav || 0)} da REPAVIMENTAÇÃO (vão para a aba Repavimentação, fora da meta)`
         + ` − ${number(f.semCoi)} de outra responsabilidade (não COI)`
         + ` = <strong>${number(f.final)}</strong> para tratar.`
+        + (f.repavForaData ? ` Obs.: ${number(f.repavForaData)} da REPAVIMENTAÇÃO saíram pela regra do "Visitado em" (2025 ou dia da base).` : "")
         + (f.semData ? ` Obs.: ${number(f.semData)} sem data em "Visitado em" foram mantidas.` : "")
         + (f.duplicadas ? ` Obs.: ${number(f.duplicadas)} linha(s) repetida(s) (mesma solicitação + ligação + código) foram mantidas.` : "");
     }
@@ -1610,7 +1620,7 @@ function evolucaoHtml(grupos) {
 
 function renderTratativaDia() {
   const box = document.getElementById("diaGrid");
-  if (!box || document.body.dataset.view !== "dia") return;
+  if (!box || document.body.dataset.view !== "charts") return;
   const todas = state.records;
   if (!todas.length) {
     box.innerHTML = `<div class="dir-card"><span class="dir-detalhe">Sem base do dia carregada ainda.</span></div>`;
@@ -2032,11 +2042,10 @@ filterControls.forEach(function(item) {
 });
 
 const VIEW_TITLES = {
-  table: "Acompanhamento diário das EXOCs",
-  dia: "Tratativa do dia — % do que entrou novo",
+  table: "COI-Serviços — acompanhamento diário das EXOCs",
   monthly: "Acompanhamento mensal EXOC 24h",
-  charts: "Dinâmica para envio aos programadores",
-  repav: "EXOCs da REPAVIMENTAÇÃO (fora da meta)",
+  charts: "Visões — dinâmica e tratativa do dia",
+  repav: "Repavimentação — EXOCs fora da meta",
 };
 
 function setView(view) {
@@ -2045,11 +2054,9 @@ function setView(view) {
   els.chartView.classList.toggle("hidden", view !== "charts");
   els.monthlyView.classList.toggle("hidden", view !== "monthly");
   els.slaView.classList.toggle("hidden", true);
-  const diaView = document.getElementById("diaView");
   const repavView = document.getElementById("repavView");
-  if (diaView) diaView.classList.toggle("hidden", view !== "dia");
   if (repavView) repavView.classList.toggle("hidden", view !== "repav");
-  [["viewTable", "table"], ["viewDia", "dia"], ["viewMonthly", "monthly"], ["viewCharts", "charts"], ["viewRepav", "repav"]].forEach(([id, v]) => {
+  [["viewTable", "table"], ["viewMonthly", "monthly"], ["viewCharts", "charts"], ["viewRepav", "repav"]].forEach(([id, v]) => {
     const b = document.getElementById(id);
     if (b) b.classList.toggle("active", view === v);
   });
@@ -2065,7 +2072,6 @@ function on(element, eventName, handler) {
 on(els.viewTable, "click", () => setView("table"));
 on(els.viewCharts, "click", () => setView("charts"));
 on(els.viewMonthly, "click", () => setView("monthly"));
-on(document.getElementById("viewDia"), "click", () => setView("dia"));
 on(document.getElementById("viewRepav"), "click", () => setView("repav"));
 on(document.getElementById("repavExportCsv"), "click", exportDailyCsv);
 on(document.getElementById("repavExportXlsx"), "click", exportDailyXlsx);
