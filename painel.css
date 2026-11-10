@@ -2045,3 +2045,7 @@ body[data-view="dia"] .workbench { display: block !important; }
 .u-acoes .button { padding: 6px 10px; font-size: 12px; }
 .muted { color: var(--muted); }
 @media (max-width: 760px) { .novo-usuario { grid-template-columns: 1fr; } }
+
+/* Tratativa do dia dentro da aba Visões */
+body[data-view="charts"] .dia-section { padding: 16px 14px 20px; background: rgba(240, 250, 255, 0.96); border-top: 1px solid #8ad3e6; }
+body[data-view="charts"] .dia-section .dia-grid { min-width: 1080px; }
